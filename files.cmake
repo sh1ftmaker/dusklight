@@ -1441,12 +1441,14 @@ set(DUSK_FILES
         include/dusk/online_desync.h
         include/dusk/online_snapshot.h
         include/dusk/online_savesync.h
+        include/dusk/online_puppet.h
         include/dusk/online_voice.h
         include/dusk/online_ui.h
         src/dusk/online/chat.cpp
         src/dusk/online/desync.cpp
         src/dusk/online/snapshot.cpp
         src/dusk/online/savesync.cpp
+        src/dusk/online/puppet.cpp
         src/dusk/online/voice.cpp
         src/dusk/online/ui.cpp
 		src/dusk/gamepad_color.cpp
