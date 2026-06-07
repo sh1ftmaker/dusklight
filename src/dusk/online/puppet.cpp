@@ -243,9 +243,26 @@ void update_and_draw(void* ctx, ModelCreateFn create,
         tevstr.TevColor.b = 0;
         tevstr.TevKColor.r = 0;
         tevstr.TevKColor.b = 0;
-        g_env_light.setLightTevColorType_MAJI(model, &tevstr);
+        // Per-player "colored clothes" (à la TP Online): tint the BODY model toward
+        // the peer's color so each puppet is visually distinct. We scale the ambient
+        // color channel — a multiply on the lit result — rather than the additive
+        // TEV color, so the tunic *recolors* instead of washing out to a glow. The
+        // head/hands/face keep the neutral tevstr so skin and hair stay natural.
+        // White (255,255,255 default identity) leaves the body unchanged.
+        dKy_tevstr_c bodyTev;
+        memcpy(&bodyTev, &tevstr, sizeof(dKy_tevstr_c));
+        {
+            const float k = 0.65f;  // tint strength toward the player color
+            const float fr = (1.0f - k) + k * (rp->colorR / 255.0f);
+            const float fg = (1.0f - k) + k * (rp->colorG / 255.0f);
+            const float fb = (1.0f - k) + k * (rp->colorB / 255.0f);
+            bodyTev.AmbCol.r = (s16)(bodyTev.AmbCol.r * fr);
+            bodyTev.AmbCol.g = (s16)(bodyTev.AmbCol.g * fg);
+            bodyTev.AmbCol.b = (s16)(bodyTev.AmbCol.b * fb);
+        }
+        g_env_light.setLightTevColorType_MAJI(model, &bodyTev);
         mDoExt_modelEntryDL(model);
-        // Draw the sub-models with the same baked TEV/light state.
+        // Draw the sub-models with the same baked (neutral) TEV/light state.
         if (faceModelP != NULL) {
             g_env_light.setLightTevColorType_MAJI(faceModelP, &tevstr);
             mDoExt_modelEntryDL(faceModelP);

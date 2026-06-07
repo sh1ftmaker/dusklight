@@ -15,13 +15,73 @@
 
 #include "imgui.h"
 
+#include "d/d_com_inf_game.h"   // dComIfGd_getViewMtx
+#include "m_Do/m_Do_lib.h"      // mDoLib_project
+#include "m_Do/m_Do_mtx.h"      // cMtx_multVec
+#include "m_Do/m_Do_graphic.h"  // mDoGph_gInf_c (game framebuffer dims)
+
 namespace dusk::online::ui {
 namespace {
 
 bool s_showWindow = true;
+bool s_showNameplates = true;
+
+// World-space height above a puppet's feet to float its nameplate (Link is ~170
+// units tall; sit a little above the head).
+constexpr float kNameplateHeight = 215.0f;
 
 ImVec4 player_color(const PlayerState* p) {
     return ImVec4(p->colorR / 255.0f, p->colorG / 255.0f, p->colorB / 255.0f, 1.0f);
+}
+
+// Float nameplates over each remote puppet. Projects the puppet's head position
+// to screen via the same path the game uses (mDoLib_project), then draws the name
+// in the player's color on ImGui's foreground draw list. Runs during the ImGui
+// pass, after the game render, so the camera matrices are current for this frame.
+void draw_nameplates() {
+    if (!s_showNameplates) return;
+    const int n = remote_count();
+    if (n <= 0) return;
+
+    // mDoLib_project returns coordinates in the game framebuffer's space; map them
+    // into ImGui's display space in case the two differ (internal-res scaling).
+    const float gw = mDoGph_gInf_c::getWidthF();
+    const float gh = mDoGph_gInf_c::getHeightF();
+    if (gw <= 0.0f || gh <= 0.0f) return;
+    const float minx = mDoGph_gInf_c::getMinXF();
+    const float miny = mDoGph_gInf_c::getMinYF();
+    const ImVec2 disp = ImGui::GetIO().DisplaySize;
+    const float sx = disp.x / gw;
+    const float sy = disp.y / gh;
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    for (int i = 0; i < n; ++i) {
+        const PlayerState* rp = remote_player(i);
+        if (rp == nullptr) continue;
+
+        Vec head = {rp->pos[0] + puppet_offset(), rp->pos[1] + kNameplateHeight, rp->pos[2]};
+
+        // Skip when behind the camera. In view space the camera looks down -Z
+        // (GC convention), so a visible point has negative Z.
+        Vec viewPos;
+        cMtx_multVec(dComIfGd_getViewMtx(), &head, &viewPos);
+        if (viewPos.z >= 0.0f) continue;
+
+        Vec proj;
+        mDoLib_project(&head, &proj);
+        const float x = (proj.x - minx) * sx;
+        const float y = (proj.y - miny) * sy;
+        if (x < -200.0f || x > disp.x + 200.0f || y < -100.0f || y > disp.y + 100.0f) continue;
+
+        const char* label = rp->name;
+        const ImVec2 ts = ImGui::CalcTextSize(label);
+        const ImVec2 pos(x - ts.x * 0.5f, y - ts.y);
+        const ImU32 col = IM_COL32(rp->colorR, rp->colorG, rp->colorB, 255);
+        const ImU32 shadow = IM_COL32(0, 0, 0, 200);
+        // 1px drop shadow for legibility over any background.
+        dl->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), shadow, label);
+        dl->AddText(pos, col, label);
+    }
 }
 
 }  // namespace
@@ -30,6 +90,7 @@ void draw_menu() {
     if (!is_active()) return;
     if (ImGui::BeginMenu("Online")) {
         ImGui::MenuItem("Status Window", nullptr, &s_showWindow);
+        ImGui::MenuItem("Nameplates", nullptr, &s_showNameplates);
 
         bool v = voice::enabled();
         if (ImGui::MenuItem("Voice Chat", nullptr, &v)) {
@@ -48,6 +109,9 @@ void draw_menu() {
 
 void draw() {
     if (!is_active()) return;
+
+    // Floating player nameplates over the puppets (independent of the status panel).
+    draw_nameplates();
 
     // Chat window is always available when online.
     chat::draw_imgui();

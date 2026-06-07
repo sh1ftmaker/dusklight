@@ -165,6 +165,23 @@ them from the streamed pose. Hard-won facts:
 `kMaxJoints = 80` caps streamed body joints (human form uses ~35). If logs show
 `puppet skeleton TRUNCATED`, raise it in `include/dusk/online.h`.
 
+**Colored clothes** (per-player tint, à la TP Online): the body model is shaded
+with a *copy* of the tevstr whose `AmbCol` (a multiplicative channel) is scaled
+toward the peer's color (`pick_color_from_name` hash, each chan 128–255), strength
+`k=0.65`. Head/hands/face keep the neutral tevstr so skin/hair stay natural.
+Material colors live in the SHARED `J3DModelData`, so per-player coloring CANNOT use
+`setTevColor` on a material (it'd recolor the local Link + every puppet) — it must
+ride the per-instance `setLightTevColorType_MAJI` path. ⚠️ The exact tint field
+(`AmbCol` vs `TevColor`/`TevKColor`) and strength still want a visual tune; if the
+body doesn't visibly recolor, try `TevKColor`/`mLightInf` in `puppet.cpp`.
+
+**Nameplates** live in `online/ui.cpp` (`draw_nameplates`), NOT the puppet: an ImGui
+foreground-text pass that projects each remote puppet's head (`pos.y +
+kNameplateHeight`) to screen via `mDoLib_project`, gated by a view-space behind-camera
+check (`cMtx_multVec(getViewMtx)`, visible ⇒ z<0). Screen coords are mapped from the
+game framebuffer (`mDoGph_gInf_c::getWidthF/HeightF/MinXF/MinYF`) into ImGui display
+space. Toggle: Online menu → "Nameplates".
+
 ---
 
 ## World/inventory sync (`src/dusk/online/savesync.cpp`)
