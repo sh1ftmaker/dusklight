@@ -12,15 +12,12 @@
  * joint control that would otherwise corrupt the puppet (and the local player).
  */
 
-#include "d/d_com_inf_game.h"   // dComIfG_Bgsp, dComIfGd_setShadow, dComIfGd_addRealShadow
+#include "d/d_com_inf_game.h"   // dComIfGd_*
 #include "d/d_kankyo.h"          // g_env_light, settingTevStruct, setLightTevColorType_MAJI
 #include "d/d_kankyo_tev_str.h"  // dKy_tevstr_c
-#include "d/d_drawlist.h"        // dDlst_shadowControl_c::getSimpleTex
-#include "d/d_bg_s_gnd_chk.h"    // dBgS_GndChk
 #include "m_Do/m_Do_ext.h"       // mDoExt_modelEntryDL
 #include "m_Do/m_Do_mtx.h"       // mDoMtx_stack_c, cMtx_copy, Mtx
 #include "SSystem/SComponent/c_xyz.h"   // cXyz
-#include "SSystem/SComponent/c_m3d.h"   // G_CM3D_F_INF
 #include "JSystem/J3DGraphAnimator/J3DModel.h"
 #include "JSystem/J3DGraphAnimator/J3DModelData.h"
 #include "JSystem/J3DGraphAnimator/J3DJoint.h"
@@ -123,7 +120,6 @@ void update_and_draw(void* ctx, ModelCreateFn create,
     static J3DModel* s_puppetHeadModels[kMaxPlayers] = {NULL};
     static J3DModel* s_puppetHandModels[kMaxPlayers] = {NULL};
     static J3DModel* s_puppetFaceModels[kMaxPlayers] = {NULL};
-    static u32 s_puppetShadowKeys[kMaxPlayers] = {0};
     static J3DModelData* s_puppetSrc = NULL;
 
     J3DModelData* src = bodyModel->getModelData();
@@ -139,7 +135,6 @@ void update_and_draw(void* ctx, ModelCreateFn create,
             s_puppetHeadModels[i] = NULL;
             s_puppetHandModels[i] = NULL;
             s_puppetFaceModels[i] = NULL;
-            s_puppetShadowKeys[i] = 0;
         }
         s_puppetSrc = src;
     }
@@ -283,39 +278,6 @@ void update_and_draw(void* ctx, ModelCreateFn create,
         if (handModel != NULL) {
             g_env_light.setLightTevColorType_MAJI(handModel, &tevstr);
             mDoExt_modelEntryDL(handModel);
-        }
-
-        // Cast a real (model-projected) shadow like the local Link. The puppet has
-        // no collision, so raycast the ground under it. Use the puppet's ACTUAL drawn
-        // position (the body base translation) — NOT rp->pos: the streamed transform
-        // and the streamed pose baseTR use different Y origins, so raycasting from
-        // rp->pos started the ray in the wrong place and blew up the height-above-
-        // ground, failing realPolygonCheck. setShadow derives that height as
-        // (param6 - param7); keep it ~a body height so there's a sane projection.
-        const f32* pbase = reinterpret_cast<const f32*>(model->getBaseTRMtx());
-        const f32 px = pbase[3], py = pbase[7], pz = pbase[11];
-        cXyz shadowChkPos(px, py + 100.0f, pz);
-        dBgS_GndChk gndChk;
-        gndChk.SetPos(&shadowChkPos);
-        f32 groundH = dComIfG_Bgsp().GroundCross(&gndChk);
-        if (groundH != -G_CM3D_F_INF) {
-            // Anchor the shadow at the puppet's FEET (which are on-screen), not at the
-            // detected ground: realPolygonCheck frustum-clips its work box, and the
-            // ground can sit well below the feet, so a ground-anchored box gets culled
-            // (no shadow). Centered at the feet, the box is in view and ShdwDraw
-            // projects the silhouette down onto the BG polys it finds below.
-            cXyz shadowCenter(px, py, pz);
-            u32& shadowKey = s_puppetShadowKeys[i];
-            const f32 bodyRefY = py + 130.0f;  // ~Link height; (param6-param7)=height
-            shadowKey = dComIfGd_setShadow(shadowKey, 0, model, &shadowCenter,
-                                           800.0f, 0.0f, bodyRefY, py, gndChk,
-                                           &tevstr, 0, 1.0f,
-                                           dDlst_shadowControl_c::getSimpleTex());
-            if (shadowKey != 0) {
-                if (faceModelP != NULL) dComIfGd_addRealShadow(shadowKey, faceModelP);
-                if (headModel != NULL) dComIfGd_addRealShadow(shadowKey, headModel);
-                if (handModel != NULL) dComIfGd_addRealShadow(shadowKey, handModel);
-            }
         }
     }
 }
