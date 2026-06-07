@@ -18,6 +18,8 @@ u16 U_GetAtanTable(float, float);
 s16 cM_atan2s(float y, float x);
 float cM_atan2f(float y, float x);
 void cM_initRnd(int, int, int);
+void cM_getRndState(s32*, s32*, s32*);
+void cM_setRndState(s32, s32, s32);
 float cM_rnd();
 float cM_rndF(float);
 float cM_rndFX(float);

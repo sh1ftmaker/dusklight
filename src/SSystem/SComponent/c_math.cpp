@@ -182,6 +182,20 @@ void cM_initRnd(int s0, int s1, int s2) {
     r2 = s2;
 }
 
+// Online: expose the integer RNG state so the desync detector can use (r0,r1,r2)
+// as a cross-platform-safe checksum, and so snapshots can restore it.
+void cM_getRndState(s32* o_r0, s32* o_r1, s32* o_r2) {
+    if (o_r0) *o_r0 = r0;
+    if (o_r1) *o_r1 = r1;
+    if (o_r2) *o_r2 = r2;
+}
+
+void cM_setRndState(s32 i_r0, s32 i_r1, s32 i_r2) {
+    r0 = i_r0;
+    r1 = i_r1;
+    r2 = i_r2;
+}
+
 /**
  * Gets a random value
  * @return a random value

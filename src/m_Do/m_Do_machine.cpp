@@ -4,6 +4,7 @@
  */
 
 #include "m_Do/m_Do_machine.h"
+#include <cstdlib>
 #include "JSystem/JFramework/JFWSystem.h"
 #include "JSystem/JKernel/JKRHeap.h"
 #include "JSystem/JUtility/JUTConsole.h"
@@ -1012,7 +1013,16 @@ int mDoMch_Create() {
     mDoDvdErr_ThdInit();
 
 #if TARGET_PC
-    if (!dusk::ui::is_prelaunch_open()) {
+    // Normally the memory card is initialized here unless the prelaunch UI is
+    // open (in which case the PLAY button did it). With DUSK_AUTOPLAY we skip the
+    // PLAY button and hide the prelaunch asynchronously, so is_prelaunch_open()
+    // can still report open here — force the init so saves mount. This is the
+    // game's normal, crash-safe init point (unlike initializing from prelaunch).
+    static const bool s_autoPlay = [] {
+        const char* v = std::getenv("DUSK_AUTOPLAY");
+        return v && v[0] == '1';
+    }();
+    if (!dusk::ui::is_prelaunch_open() || s_autoPlay) {
         mDoMemCd_ThdInit();
     }
 #else

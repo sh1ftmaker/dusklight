@@ -10,7 +10,11 @@
 #include "f_ap/f_ap_game.h"
 #include "m_Do/m_Do_Reset.h"
 #include "m_Do/m_Do_main.h"
+#include "dusk/online.h"
+#include "dusk/test_input.h"
+#include "SSystem/SComponent/c_math.h"
 #include "tracy/Tracy.hpp"
+#include <cmath>
 
 JUTGamePad* mDoCPd_c::m_gamePad[4];
 
@@ -98,6 +102,54 @@ void mDoCPd_c::read() {
 #if DEBUG
         interface2++;
 #endif
+    }
+
+    // Online: stream the local player's input to the peer each tick, and inject
+    // the peer's most recent input into the second pad slot. The puppet that
+    // makes the two players visible to each other is driven from the streamed
+    // transform (see m_Do_graphic.cpp); the input channel is carried here so the
+    // eventual input-lockstep path has the data it needs.
+    // Test harness: overlay synthetic input onto pad slot 0 so an instance can be
+    // driven programmatically over UDP (independently per instance). Applied
+    // before the online publish so the peer receives the driven input too.
+    if (dusk::test_input::active()) {
+        dusk::test_input::InputState s;
+        if (dusk::test_input::get_state(&s)) {
+            static u32 s_prevButtons = 0;
+            interface_of_controller_pad& p = m_cpadInfo[0];
+            p.mButtonFlags = s.buttons;
+            p.mPressedButtonFlags = s.buttons & ~s_prevButtons;
+            s_prevButtons = s.buttons;
+
+            f32 mag = sqrtf(s.stickX * s.stickX + s.stickY * s.stickY);
+            if (mag > 1.0f) mag = 1.0f;
+            p.mMainStickPosX = s.stickX;
+            p.mMainStickPosY = s.stickY;
+            p.mMainStickValue = mag;
+            p.mMainStickAngle = cM_atan2s(s.stickX, s.stickY);
+
+            f32 cmag = sqrtf(s.cStickX * s.cStickX + s.cStickY * s.cStickY);
+            if (cmag > 1.0f) cmag = 1.0f;
+            p.mCStickPosX = s.cStickX;
+            p.mCStickPosY = s.cStickY;
+            p.mCStickValue = cmag;
+            p.mCStickAngle = cM_atan2s(s.cStickX, s.cStickY);
+
+            p.mTriggerLeft = s.triggerL;
+            p.mTriggerRight = s.triggerR;
+            LRlockCheck(&p);
+        }
+    }
+
+    if (dusk::online::is_active()) {
+        dusk::online::set_local_input(&m_cpadInfo[0]);
+        const dusk::online::PlayerState* rp = dusk::online::remote_player(0);
+        if (rp != nullptr) {
+            interface_of_controller_pad remote;
+            if (dusk::online::get_remote_input(rp->id, &remote)) {
+                m_cpadInfo[1] = remote;
+            }
+        }
     }
 }
 

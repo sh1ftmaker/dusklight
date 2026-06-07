@@ -56,6 +56,11 @@
 #include "dusk/game_clock.h"
 #include "dusk/gyro.h"
 #include "dusk/mouse.h"
+#include "dusk/online.h"
+#include "dusk/online_desync.h"
+#include "dusk/online_savesync.h"
+#include "dusk/online_ui.h"
+#include "dusk/test_input.h"
 #include "dusk/imgui/ImGuiConsole.hpp"
 #include "dusk/imgui/ImGuiEngine.hpp"
 #include "dusk/iso_validate.hpp"
@@ -164,6 +169,16 @@ AuroraStats dusk::lastFrameAuroraStats;
 float dusk::frameUsagePct = 0.0f;
 
 bool launchUILoop() {
+    // Test/automation: DUSK_AUTOPLAY=1 skips the launcher menu and boots straight
+    // into the configured disc after a short settle delay (lets disc verification
+    // finish), mirroring what the PLAY button does (set IsGameLaunched). Lets an
+    // instance reach gameplay with no human clicking PLAY.
+    static const bool autoPlay = [] {
+        const char* v = std::getenv("DUSK_AUTOPLAY");
+        return v && v[0] == '1';
+    }();
+    int autoPlayFrames = 0;
+
     while (dusk::IsRunning && !dusk::IsGameLaunched) {
         const AuroraEvent* event = aurora_update();
         while (event != nullptr && event->type != AURORA_NONE) {
@@ -194,6 +209,11 @@ bool launchUILoop() {
         dusk::g_imguiConsole.PostDraw();
 
         aurora_end_frame();
+
+        if (autoPlay && !dusk::IsGameLaunched && ++autoPlayFrames > 120) {
+            DuskLog.info("[autoplay] DUSK_AUTOPLAY set — launching configured disc");
+            dusk::IsGameLaunched = true;
+        }
     }
 
     return dusk::IsRunning;
@@ -296,6 +316,9 @@ void main01(void) {
                     dusk::mouse::read();
                     dusk::gyro::read(pacing.sim_pace);
                     fapGm_Execute();
+                    if (dusk::online::is_active()) {
+                        dusk::online::desync::submit_local(dusk::online::local_tick());
+                    }
                     mDoAud_Execute();
                     dusk::game_clock::commit_sim_tick();
                 }
@@ -322,8 +345,16 @@ void main01(void) {
             // EXECUTE GAME LOGIC & RENDER
             // This calls mDoGph_Painter -> JFWDisplay -> GX Functions
             fapGm_Execute();
+            if (dusk::online::is_active()) {
+                dusk::online::desync::submit_local(dusk::online::local_tick());
+            }
 
             mDoAud_Execute();
+        }
+
+        if (dusk::online::is_active()) {
+            dusk::online::savesync::frame_update();
+            dusk::online::ui::frame_update();
         }
 
         static Limiter main_loop_limiter;
@@ -558,6 +589,8 @@ int game_main(int argc, char* argv[]) {
     ApplyCVarOverrides(parsed_arg_options["cvar"]);
     dusk::crash_reporting::initialize();
     dusk::crash_handler::install();
+    dusk::online::init();
+    dusk::test_input::init();
     // TODO: How to handle this?
     // PADSetDefaultMapping(&defaultPadMapping, PAD_TYPE_STANDARD);
 
@@ -777,6 +810,8 @@ int game_main(int argc, char* argv[]) {
 
     dusk::MoviePlayerShutdown();
 
+    dusk::online::shutdown();
+    dusk::test_input::shutdown();
     dusk::crash_reporting::shutdown();
     dusk::ShutdownFileLogging();
     fflush(stdout);

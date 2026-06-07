@@ -14,6 +14,7 @@
 #include "JSystem/JUtility/JUTGamePad.h"
 #include "dusk/action_bindings.h"
 #include "dusk/audio/DuskAudioSystem.h"
+#include "dusk/online_ui.h"
 #include "dusk/config.hpp"
 #include "dusk/data.hpp"
 #include "dusk/dusk.h"
@@ -278,6 +279,7 @@ namespace dusk {
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         if (showMenu && ImGui::BeginMainMenuBar()) {
             m_menuTools.draw();
+            dusk::online::ui::draw_menu();
 
             ImGui::EndMainMenuBar();
         }
@@ -370,6 +372,8 @@ namespace dusk {
             m_menuTools.ShowStateShare();
             m_menuTools.ShowActorSpawner();
         }
+
+        dusk::online::ui::draw();
 
     }
 

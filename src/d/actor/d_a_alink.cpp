@@ -54,6 +54,8 @@
 #if TARGET_PC
 #include "dusk/action_bindings.h"
 #include "dusk/frame_interpolation.h"
+#include "dusk/logging.h"
+#include "dusk/online.h"
 #include "dusk/settings.h"
 #include "res/Object/Alink.h"
 #include <cstring>
@@ -2443,7 +2445,42 @@ bool daAlink_c::modelCallBack(int i_jointNo) {
     return true;
 }
 
+// Set while calc()'ing the online remote-player puppet, which shares the local
+// player's Link model data (and therefore its joint callbacks). The puppet has
+// no daAlink_c behind its model UserArea, so skip the player-specific joint
+// control entirely — the puppet just renders the base skeletal pose.
+bool g_onlinePuppetCalc = false;
+
+// Streamed world-space joint matrices (12 floats each) for the remote-player
+// puppet currently being calc()'d, plus how many are valid. While set, the Link
+// joint callbacks inject these in place of the local player's joint control, so
+// envelope skinning, normal/bump matrices, and the PC frame-interpolation
+// snapshot are all derived from the remote pose in a single calc() pass.
+const f32* g_puppetJoints = NULL;
+int g_puppetJointCount = 0;
+
+// Drive one puppet joint from the streamed pose during calc(). Runs at callback
+// phase 0, where the joint's world matrix has just been computed and
+// J3DSys::mCurrentMtx holds it; overriding both sets this joint absolutely and
+// gives children the correct parent. Joints past the streamed count keep their
+// computed (bind-relative) matrix as a fallback.
+static void daAlink_applyPuppetJoint(J3DJoint* i_joint) {
+    if (g_puppetJoints == NULL) return;
+    int jntNo = i_joint->getJntNo();
+    if (jntNo < 0 || jntNo >= g_puppetJointCount) return;
+    Mtx m;
+    memcpy(m, g_puppetJoints + jntNo * 12, sizeof(Mtx));
+    j3dSys.getModel()->setAnmMtx(jntNo, m);
+    cMtx_copy(m, J3DSys::mCurrentMtx);
+}
+
 static int daAlink_modelCallBack(J3DJoint* i_joint, int param_1) {
+    if (g_onlinePuppetCalc) {
+        if (param_1 == 0) {
+            daAlink_applyPuppetJoint(i_joint);
+        }
+        return 1;
+    }
     J3DJoint* joint = i_joint;
     int jntNo = joint->getJntNo();
     daAlink_c* i_this = (daAlink_c*)j3dSys.getModel()->getUserArea();
@@ -2503,6 +2540,13 @@ int daAlink_c::headModelCallBack(int i_jointNo) {
 }
 
 static int daAlink_headModelCallBack(J3DJoint* i_joint, int param_1) {
+    if (g_onlinePuppetCalc) {
+        // Online puppet head: the real headModelCallBack drives hair physics on
+        // the LOCAL mpLinkHatModel using local actor state, which is wrong for a
+        // puppet (and would corrupt the local player's hair). Leave the joint at
+        // its MtxCalc bind pose so the puppet's hair renders in a neutral pose.
+        return 1;
+    }
     J3DJoint* joint = i_joint;
     int joint_no = joint->getJntNo();
     daAlink_c* i_this = (daAlink_c*)j3dSys.getModel()->getUserArea();
@@ -2527,6 +2571,12 @@ int daAlink_c::wolfModelCallBack(int i_jointNo) {
 }
 
 static int daAlink_wolfModelCallBack(J3DJoint* i_joint, int param_1) {
+    if (g_onlinePuppetCalc) {
+        if (param_1 == 0) {
+            daAlink_applyPuppetJoint(i_joint);
+        }
+        return 1;
+    }
     J3DJoint* joint = i_joint;
     int joint_no = joint->getJntNo();
     daAlink_c* i_this = (daAlink_c*)j3dSys.getModel()->getUserArea();
@@ -19826,6 +19876,210 @@ int daAlink_c::draw() {
 
     if (m_swordBlur.field_0x14 > 0) {
         dComIfGd_entryZSortXluList(&m_swordBlur, m_swordBlur.field_0x308[0]);
+    }
+
+    // Online: stream our own skeleton each frame so peers can animate our puppet,
+    // then render a puppet of each remote player using their streamed pose (see
+    // dusk::online). Falls back to a static base pose at the streamed transform if
+    // no skeleton has arrived yet. Per-player color tint applied.
+    if (dusk::online::is_active() && mpLinkModel != NULL) {
+        // --- publish our skeleton (model-space base TR + joint matrices) ---
+        if (!checkWolf()) {
+            static float s_baseTR[12];
+            static float s_joints[dusk::online::kMaxJoints * 12];
+            int jn = mpLinkModel->getModelData()->getJointNum();
+            if (jn > dusk::online::kMaxJoints) jn = dusk::online::kMaxJoints;
+            memcpy(s_baseTR, &mpLinkModel->getBaseTRMtx(), 12 * sizeof(f32));
+            for (int j = 0; j < jn; j++) {
+                memcpy(s_joints + j * 12, mpLinkModel->getAnmMtx(j), 12 * sizeof(f32));
+            }
+            dusk::online::set_local_pose(s_baseTR, s_joints, jn);
+        }
+
+        // A full human Link is several models: body (al.bmd), head+hair
+        // (al_head.bmd), hands (al_hands.bmd) and face (al_face.bmd). The puppet
+        // needs all of them — drawing only the body leaves it headless/handless.
+        // The sub-models attach to the body's (already-synced) joints, so they
+        // follow the streamed pose; their own internal joints (hair sway, fingers)
+        // render in a neutral bind pose for now.
+        static J3DModel* s_puppetModels[dusk::online::kMaxPlayers] = {NULL};
+        static J3DModel* s_puppetHeadModels[dusk::online::kMaxPlayers] = {NULL};
+        static J3DModel* s_puppetHandModels[dusk::online::kMaxPlayers] = {NULL};
+        static J3DModel* s_puppetFaceModels[dusk::online::kMaxPlayers] = {NULL};
+        static u32 s_puppetShadowKeys[dusk::online::kMaxPlayers] = {0};
+        static J3DModelData* s_puppetSrc = NULL;
+        J3DModelData* src = mpLinkModel->getModelData();
+        // Sub-model data comes from the local player's already-loaded models (NULL
+        // in wolf form, where the body model contains everything).
+        J3DModelData* headSrc = (mpLinkHatModel != NULL) ? mpLinkHatModel->getModelData() : NULL;
+        J3DModelData* handSrc = (mpLinkHandModel != NULL) ? mpLinkHandModel->getModelData() : NULL;
+        J3DModelData* faceSrc = (mpLinkFaceModel != NULL) ? mpLinkFaceModel->getModelData() : NULL;
+        if (s_puppetSrc != src) {
+            // Player model data changed (area/form change) — drop stale models.
+            for (int i = 0; i < dusk::online::kMaxPlayers; i++) {
+                s_puppetModels[i] = NULL;
+                s_puppetHeadModels[i] = NULL;
+                s_puppetHandModels[i] = NULL;
+                s_puppetFaceModels[i] = NULL;
+                s_puppetShadowKeys[i] = 0;
+            }
+            s_puppetSrc = src;
+        }
+
+        int n = dusk::online::remote_count();
+        for (int i = 0; i < n && i < dusk::online::kMaxPlayers; i++) {
+            const dusk::online::PlayerState* rp = dusk::online::remote_player(i);
+            if (rp == NULL) continue;
+
+            J3DModel*& model = s_puppetModels[i];
+            if (model == NULL) {
+                // Create through initModelEnv (mdlFlags=0) rather than a raw
+                // mDoExt_J3DModel__create so the puppet gets the SAME warp-material
+                // setup the real Link does (daAlink_c::initModel detects the
+                // WARP_TEX material on the head, runs dRes_info_c::on/offWarpMaterial
+                // and adds diff-flag 0x2000400). Without it the head's warp material
+                // renders as the raw black "digital dissolve" blocks.
+                model = initModelEnv(src, 0);
+                if (model != NULL) {
+                    DuskLog.info("[online] puppet model created for '{}' (id {})", rp->name, rp->id);
+                }
+            }
+            if (model == NULL) continue;
+
+            // Create the matching head/hand/face sub-models (human form only).
+            J3DModel*& headModel = s_puppetHeadModels[i];
+            J3DModel*& handModel = s_puppetHandModels[i];
+            J3DModel*& faceModel = s_puppetFaceModels[i];
+            if (headModel == NULL && headSrc != NULL) headModel = initModelEnv(headSrc, 0);
+            if (handModel == NULL && handSrc != NULL) handModel = initModelEnv(handSrc, 0);
+            if (faceModel == NULL && faceSrc != NULL) faceModel = initModelEnv(faceSrc, 0x20200);
+
+            model->setUserArea(reinterpret_cast<uintptr_t>(this));
+            if (headModel != NULL) headModel->setUserArea(reinterpret_cast<uintptr_t>(this));
+            if (handModel != NULL) handModel->setUserArea(reinterpret_cast<uintptr_t>(this));
+            if (faceModel != NULL) faceModel->setUserArea(reinterpret_cast<uintptr_t>(this));
+
+            // Apply the peer's streamed skeleton if available, else base pose.
+            static float s_rbase[12];
+            static float s_rjoints[dusk::online::kMaxJoints * 12];
+            int rjn = 0;
+            const bool havePose = dusk::online::get_remote_pose(rp->id, s_rbase, s_rjoints, &rjn);
+
+            // One-time diagnostics to verify puppet skeleton coverage and the
+            // frame-interpolation state behind the "waist-up / dissolving" report.
+            static bool s_loggedPuppetInfo = false;
+            if (!s_loggedPuppetInfo && havePose) {
+                s_loggedPuppetInfo = true;
+                const int modelJoints = src->getJointNum();
+                DuskLog.info("[online] puppet skeleton: model joints={}, weightEnvMtx={}, "
+                             "streamed joints={} (cap {}), frameInterp={}",
+                             modelJoints, src->getWEvlpMtxNum(), rjn, dusk::online::kMaxJoints,
+                             dusk::frame_interp::is_enabled() ? "on" : "off");
+                if (rjn < modelJoints) {
+                    DuskLog.warn("[online] puppet skeleton TRUNCATED: only {}/{} joints streamed; "
+                                 "joints {}+ fall back to bind pose (raise kMaxJoints)",
+                                 rjn, modelJoints, rjn);
+                }
+                for (int j = 0; j < rjn; j++) {
+                    const float* mtx = s_rjoints + j * 12;
+                    const float sumsq = mtx[0] * mtx[0] + mtx[4] * mtx[4] + mtx[8] * mtx[8];
+                    if (sumsq < 1.0e-8f) {
+                        DuskLog.warn("[online] puppet joint {} streamed with a near-zero matrix "
+                                     "(collapsed -> dissolving geometry)", j);
+                    }
+                }
+            }
+
+            g_onlinePuppetCalc = true;
+            if (havePose) {
+                Mtx bt;
+                memcpy(bt, s_rbase, 12 * sizeof(f32));
+                bt[0][3] += dusk::online::puppet_offset();  // debug lateral offset
+                // Feed the streamed pose through the joint callbacks during calc()
+                // so envelopes, normal/bump matrices, and the interp snapshot are
+                // all consistent with it (no post-calc overwrite).
+                g_puppetJoints = s_rjoints;
+                g_puppetJointCount = rjn;
+                model->setBaseTRMtx(bt);
+                model->calc();
+                g_puppetJoints = NULL;
+                g_puppetJointCount = 0;
+            } else {
+                mDoMtx_stack_c::transS(rp->pos[0] + dusk::online::puppet_offset(), rp->pos[1],
+                                       rp->pos[2]);
+                mDoMtx_stack_c::YrotM(rp->angleY);
+                model->setBaseTRMtx(mDoMtx_stack_c::get());
+                model->calc();
+            }
+
+            // Attach the sub-models to the now-posed body skeleton, exactly like
+            // the real Link does (see daAlink_c::draw / setMtx): face + head hang
+            // off body joint 4 (head); hands off the body base plus joints 9/0xE.
+            // g_onlinePuppetCalc stays set so the head callback skips local hair
+            // physics (the hand/face models have no joint callback).
+            if (faceModel != NULL) {
+                faceModel->setBaseTRMtx(model->getAnmMtx(4));
+                faceModel->calc();
+            }
+            if (headModel != NULL) {
+                headModel->setBaseTRMtx(model->getAnmMtx(4));
+                headModel->calc();
+            }
+            if (handModel != NULL) {
+                handModel->setBaseTRMtx(model->getBaseTRMtx());
+                handModel->calc();
+                handModel->setAnmMtx(1, model->getAnmMtx(9));
+                handModel->setAnmMtx(2, model->getAnmMtx(0xE));
+            }
+            g_onlinePuppetCalc = false;
+
+            cXyz ppos(rp->pos[0] + dusk::online::puppet_offset(), rp->pos[1], rp->pos[2]);
+            // Shade the puppet IDENTICALLY to the real player (see daAlink_c::draw
+            // above): pick the env-light TEV preset by form, then zero the custom
+            // additive TEV color registers via initTevCustomColor(). Writing a
+            // non-zero TevColor here (e.g. colorR/2) adds ~half-white to every
+            // material — that is what produced the washed-out limbs, glowing boots,
+            // and black head ("Midna dissolve" look).
+            g_env_light.settingTevStruct(rp->isWolf ? 9 : 10, &ppos, &tevStr);
+            initTevCustomColor();
+            g_env_light.setLightTevColorType_MAJI(model, &tevStr);
+            mDoExt_modelEntryDL(model);
+            // Draw the sub-models with the same baked TEV/light state.
+            if (faceModel != NULL) {
+                g_env_light.setLightTevColorType_MAJI(faceModel, &tevStr);
+                mDoExt_modelEntryDL(faceModel);
+            }
+            if (headModel != NULL) {
+                g_env_light.setLightTevColorType_MAJI(headModel, &tevStr);
+                mDoExt_modelEntryDL(headModel);
+            }
+            if (handModel != NULL) {
+                g_env_light.setLightTevColorType_MAJI(handModel, &tevStr);
+                mDoExt_modelEntryDL(handModel);
+            }
+
+            // Cast a real (model-projected) shadow like the local Link. The puppet
+            // has no collision, so raycast the ground under its streamed position
+            // to get the ground height + poly to project onto, then register the
+            // body and sub-models so the whole silhouette is shadowed.
+            cXyz shadowChkPos(ppos.x, rp->pos[1] + 100.0f, ppos.z);
+            dBgS_GndChk gndChk;
+            gndChk.SetPos(&shadowChkPos);
+            f32 groundH = dComIfG_Bgsp().GroundCross(&gndChk);
+            if (groundH != -G_CM3D_F_INF) {
+                cXyz shadowCenter(ppos.x, rp->pos[1], ppos.z);
+                u32& shadowKey = s_puppetShadowKeys[i];
+                shadowKey = dComIfGd_setShadow(shadowKey, 0, model, &shadowCenter,
+                                               800.0f, 0.0f, rp->pos[1], groundH, gndChk,
+                                               &tevStr, 0, 1.0f,
+                                               dDlst_shadowControl_c::getSimpleTex());
+                if (shadowKey != 0) {
+                    if (faceModel != NULL) dComIfGd_addRealShadow(shadowKey, faceModel);
+                    if (headModel != NULL) dComIfGd_addRealShadow(shadowKey, headModel);
+                    if (handModel != NULL) dComIfGd_addRealShadow(shadowKey, handModel);
+                }
+            }
+        }
     }
 
     return 1;

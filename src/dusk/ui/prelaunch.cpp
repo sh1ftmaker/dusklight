@@ -1,5 +1,7 @@
 #include "prelaunch.hpp"
 
+#include <cstdlib>
+
 #include "dusk/config.hpp"
 #include "dusk/data.hpp"
 #include "dusk/file_select.hpp"
@@ -837,7 +839,18 @@ void Prelaunch::update() {
         activeDiscLoaded && state.configuredDiscPath != state.activeDiscPath;
     mDocument->SetClass("disc-ready", IsGameLaunched);
     if (canLaunchConfiguredDisc) {
+        const bool wasLaunched = IsGameLaunched;
         IsGameLaunched = true;
+        // Test/automation: when DUSK_AUTOPLAY=1, dismiss this launcher overlay on
+        // auto-launch so the running game is actually visible. Default behavior
+        // (DUSK_AUTOPLAY unset) is unchanged.
+        static const bool autoLaunch = [] {
+            const char* v = std::getenv("DUSK_AUTOPLAY");
+            return v && v[0] == '1';
+        }();
+        if (autoLaunch && !wasLaunched) {
+            hide(true);
+        }
     }
 
     if (!mEntranceAnimationStarted && mDocument != nullptr) {
