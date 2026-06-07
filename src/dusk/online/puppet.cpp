@@ -269,28 +269,9 @@ void update_and_draw(void* ctx, ModelCreateFn create,
         tevstr.TevColor.b = 0;
         tevstr.TevKColor.r = 0;
         tevstr.TevKColor.b = 0;
-        // Per-player "colored clothes" (à la TP Online): tint the BODY model toward
-        // the peer's color so each puppet is visually distinct. The additive TEV
-        // color register is the proven per-instance lever here — zeroing it above is
-        // exactly what removed the old wash-out, and AmbCol had no visible effect on
-        // Link's materials. To get a *hue* (not just an overall brightening, since
-        // the name-hash colors are all 128–255), we subtract the min channel so only
-        // the dominant color(s) are added. Head/hands/face keep the neutral tevstr so
-        // skin and hair stay natural.
-        dKy_tevstr_c bodyTev;
-        memcpy(&bodyTev, &tevstr, sizeof(dKy_tevstr_c));
-        {
-            const float strength = 0.75f;  // additive tint strength (tunable)
-            uint8_t mn = rp->colorR;
-            if (rp->colorG < mn) mn = rp->colorG;
-            if (rp->colorB < mn) mn = rp->colorB;
-            bodyTev.TevColor.r = (s16)((rp->colorR - mn) * strength);
-            bodyTev.TevColor.g = (s16)((rp->colorG - mn) * strength);
-            bodyTev.TevColor.b = (s16)((rp->colorB - mn) * strength);
-        }
-        g_env_light.setLightTevColorType_MAJI(model, &bodyTev);
+        g_env_light.setLightTevColorType_MAJI(model, &tevstr);
         mDoExt_modelEntryDL(model);
-        // Draw the sub-models with the same baked (neutral) TEV/light state.
+        // Draw the sub-models with the same baked TEV/light state.
         if (faceModelP != NULL) {
             g_env_light.setLightTevColorType_MAJI(faceModelP, &tevstr);
             mDoExt_modelEntryDL(faceModelP);
@@ -305,24 +286,29 @@ void update_and_draw(void* ctx, ModelCreateFn create,
         }
 
         // Cast a real (model-projected) shadow like the local Link. The puppet has
-        // no collision, so raycast the ground under its streamed position to get the
-        // ground height + poly to project onto, then register the body + sub-models
-        // so the whole silhouette is shadowed.
-        cXyz shadowChkPos(ppos.x, rp->pos[1] + 100.0f, ppos.z);
+        // no collision, so raycast the ground under it. Use the puppet's ACTUAL drawn
+        // position (the body base translation) — NOT rp->pos: the streamed transform
+        // and the streamed pose baseTR use different Y origins, so raycasting from
+        // rp->pos started the ray in the wrong place and blew up the height-above-
+        // ground, failing realPolygonCheck. setShadow derives that height as
+        // (param6 - param7); keep it ~a body height so there's a sane projection.
+        const f32* pbase = reinterpret_cast<const f32*>(model->getBaseTRMtx());
+        const f32 px = pbase[3], py = pbase[7], pz = pbase[11];
+        cXyz shadowChkPos(px, py + 100.0f, pz);
         dBgS_GndChk gndChk;
         gndChk.SetPos(&shadowChkPos);
         f32 groundH = dComIfG_Bgsp().GroundCross(&gndChk);
         if (groundH != -G_CM3D_F_INF) {
-            cXyz shadowCenter(ppos.x, rp->pos[1], ppos.z);
+            // Anchor the shadow at the puppet's FEET (which are on-screen), not at the
+            // detected ground: realPolygonCheck frustum-clips its work box, and the
+            // ground can sit well below the feet, so a ground-anchored box gets culled
+            // (no shadow). Centered at the feet, the box is in view and ShdwDraw
+            // projects the silhouette down onto the BG polys it finds below.
+            cXyz shadowCenter(px, py, pz);
             u32& shadowKey = s_puppetShadowKeys[i];
-            // setShadow derives the height-above-ground as (param6 - param7). Passing
-            // the feet Y for both made it ~0 → realPolygonCheck found no receiver and
-            // no shadow drew. Use a torso reference point above the feet (like the
-            // real Link, which uses its body-cylinder centers) so there's a real
-            // projection volume; it also fades correctly as the puppet jumps.
-            const f32 bodyRefY = rp->pos[1] + 100.0f;
+            const f32 bodyRefY = py + 130.0f;  // ~Link height; (param6-param7)=height
             shadowKey = dComIfGd_setShadow(shadowKey, 0, model, &shadowCenter,
-                                           800.0f, 0.0f, bodyRefY, groundH, gndChk,
+                                           800.0f, 0.0f, bodyRefY, py, gndChk,
                                            &tevstr, 0, 1.0f,
                                            dDlst_shadowControl_c::getSimpleTex());
             if (shadowKey != 0) {

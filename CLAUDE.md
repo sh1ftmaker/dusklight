@@ -157,23 +157,33 @@ them from the streamed pose. Hard-won facts:
    `mLightInf.a`, `TevColor.rgb`, `TevKColor.r`/`.b`). A non-zero additive TevColor
    washes the model out (glowing limbs). Uses a LOCAL `dKy_tevstr_c`, not the
    actor's member.
-6. **Shadow**: the puppet has no collision, so raycast the ground under its streamed
-   pos (`dComIfG_Bgsp().GroundCross`) for the projection plane, then
-   `dComIfGd_setShadow(body)` + `addRealShadow(head/hands/face)`. Guard with
-   `groundH != -G_CM3D_F_INF`.
+6. **Shadow**: the puppet has no collision, so raycast the ground under it
+   (`dComIfG_Bgsp().GroundCross`, guarded by `groundH != -G_CM3D_F_INF`), then
+   `dComIfGd_setShadow(body)` + `addRealShadow(head/hands/face)`. Hard-won details:
+   - Anchor the shadow at the puppet's **feet** (the body base translation), NOT at
+     the detected ground Y. `setShadow`→`realPolygonCheck` builds a work box around
+     the center and **frustum-clips it**; if the center sits far below the visible
+     puppet (the ground can be well below the feet) the box is culled and no shadow
+     is created (`key==0`). Centered at the on-screen feet it works; `ShdwDraw` still
+     projects the silhouette down onto whatever BG polys are below.
+   - `setShadow` derives the height-above-ground as `(param6 - param7)`; keep it ~a
+     body height (we pass `feetY+130` and `feetY`). Passing feet for both → ~0 → no
+     receiver found.
+   - Use the **drawn** position (`getBaseTRMtx` translation), not the streamed
+     `rp->pos` transform — they have different Y origins. `key==0` every frame the
+     puppet is simply off-camera is expected.
 
 `kMaxJoints = 80` caps streamed body joints (human form uses ~35). If logs show
 `puppet skeleton TRUNCATED`, raise it in `include/dusk/online.h`.
 
-**Colored clothes** (per-player tint, à la TP Online): the body model is shaded
-with a *copy* of the tevstr whose `AmbCol` (a multiplicative channel) is scaled
-toward the peer's color (`pick_color_from_name` hash, each chan 128–255), strength
-`k=0.65`. Head/hands/face keep the neutral tevstr so skin/hair stay natural.
-Material colors live in the SHARED `J3DModelData`, so per-player coloring CANNOT use
-`setTevColor` on a material (it'd recolor the local Link + every puppet) — it must
-ride the per-instance `setLightTevColorType_MAJI` path. ⚠️ The exact tint field
-(`AmbCol` vs `TevColor`/`TevKColor`) and strength still want a visual tune; if the
-body doesn't visibly recolor, try `TevKColor`/`mLightInf` in `puppet.cpp`.
+**Colored clothes** (per-player body tint) was tried and **removed** — the player
+color now lives only in the nameplate. Notes for anyone retrying it: `AmbCol` had no
+visible effect on Link's materials; the additive `TevColor` register DID work (it's
+what `setLightTevColorType_MAJI` bakes per-instance) but tints the whole body
+(skin/boots/belt too) and reads as garish neon, not a tunic recolor. A real
+tunic-only recolor needs per-material color, but materials live in the SHARED
+`J3DModelData` (a `setTevColor` there would recolor the local Link + every puppet),
+so it would require per-instance material color blocks — non-trivial. Left out.
 
 **Nameplates** live in `online/ui.cpp` (`draw_nameplates`), NOT the puppet: an ImGui
 foreground-text pass that projects each remote puppet's head (`pos.y +
