@@ -43,6 +43,12 @@ void draw_nameplates() {
     const int n = remote_count();
     if (n <= 0) return;
 
+    // No camera/view yet (e.g. logo/title scenes before gameplay) — bail before
+    // touching the view matrix. dComIfGd_getViewMtx() dereferences getView(), which
+    // is null here; mDoLib_project guards this internally but our behind-camera
+    // check below would fault first.
+    if (dComIfGd_getView() == nullptr) return;
+
     // mDoLib_project returns coordinates in the game framebuffer's space; map them
     // into ImGui's display space in case the two differ (internal-res scaling).
     const float gw = mDoGph_gInf_c::getWidthF();
