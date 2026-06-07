@@ -110,6 +110,7 @@ void init_chat();
 void init_desync();
 void init_snapshot();
 void init_savesync();
+void init_enemy();
 void init_voice();
 }  // namespace modules
 

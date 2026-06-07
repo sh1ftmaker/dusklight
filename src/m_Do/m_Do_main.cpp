@@ -56,10 +56,13 @@
 #include "dusk/game_clock.h"
 #include "dusk/gyro.h"
 #include "dusk/mouse.h"
+#if DUSK_ONLINE
 #include "dusk/online.h"
 #include "dusk/online_desync.h"
 #include "dusk/online_savesync.h"
+#include "dusk/online_enemy.h"
 #include "dusk/online_ui.h"
+#endif
 #include "dusk/test_input.h"
 #include "dusk/imgui/ImGuiConsole.hpp"
 #include "dusk/imgui/ImGuiEngine.hpp"
@@ -316,9 +319,11 @@ void main01(void) {
                     dusk::mouse::read();
                     dusk::gyro::read(pacing.sim_pace);
                     fapGm_Execute();
+#if DUSK_ONLINE
                     if (dusk::online::is_active()) {
                         dusk::online::desync::submit_local(dusk::online::local_tick());
                     }
+#endif
                     mDoAud_Execute();
                     dusk::game_clock::commit_sim_tick();
                 }
@@ -345,17 +350,22 @@ void main01(void) {
             // EXECUTE GAME LOGIC & RENDER
             // This calls mDoGph_Painter -> JFWDisplay -> GX Functions
             fapGm_Execute();
+#if DUSK_ONLINE
             if (dusk::online::is_active()) {
                 dusk::online::desync::submit_local(dusk::online::local_tick());
             }
+#endif
 
             mDoAud_Execute();
         }
 
+#if DUSK_ONLINE
         if (dusk::online::is_active()) {
             dusk::online::savesync::frame_update();
+            dusk::online::enemy::frame_update();
             dusk::online::ui::frame_update();
         }
+#endif
 
         static Limiter main_loop_limiter;
         static double last_fps_setting = 0.0;
@@ -589,7 +599,9 @@ int game_main(int argc, char* argv[]) {
     ApplyCVarOverrides(parsed_arg_options["cvar"]);
     dusk::crash_reporting::initialize();
     dusk::crash_handler::install();
+#if DUSK_ONLINE
     dusk::online::init();
+#endif
     dusk::test_input::init();
     // TODO: How to handle this?
     // PADSetDefaultMapping(&defaultPadMapping, PAD_TYPE_STANDARD);
@@ -810,7 +822,9 @@ int game_main(int argc, char* argv[]) {
 
     dusk::MoviePlayerShutdown();
 
+#if DUSK_ONLINE
     dusk::online::shutdown();
+#endif
     dusk::test_input::shutdown();
     dusk::crash_reporting::shutdown();
     dusk::ShutdownFileLogging();

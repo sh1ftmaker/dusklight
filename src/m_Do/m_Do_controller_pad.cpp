@@ -10,7 +10,9 @@
 #include "f_ap/f_ap_game.h"
 #include "m_Do/m_Do_Reset.h"
 #include "m_Do/m_Do_main.h"
+#if DUSK_ONLINE
 #include "dusk/online.h"
+#endif
 #include "dusk/test_input.h"
 #include "SSystem/SComponent/c_math.h"
 #include "tracy/Tracy.hpp"
@@ -141,6 +143,7 @@ void mDoCPd_c::read() {
         }
     }
 
+#if DUSK_ONLINE
     if (dusk::online::is_active()) {
         dusk::online::set_local_input(&m_cpadInfo[0]);
         const dusk::online::PlayerState* rp = dusk::online::remote_player(0);
@@ -151,6 +154,7 @@ void mDoCPd_c::read() {
             }
         }
     }
+#endif
 }
 
 void mDoCPd_c::convert(interface_of_controller_pad* pInterface, JUTGamePad* pPad) {

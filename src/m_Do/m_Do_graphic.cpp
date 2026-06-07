@@ -36,7 +36,9 @@
 #include "m_Do/m_Do_graphic.h"
 #include "m_Do/m_Do_machine.h"
 #include "m_Do/m_Do_main.h"
+#if DUSK_ONLINE
 #include "dusk/online.h"
+#endif
 #include "tracy/Tracy.hpp"
 
 #if PLATFORM_WII || PLATFORM_SHIELD
@@ -846,6 +848,7 @@ static void dScnPly_BeforeOfPaint() {
     dDbVw_deleteDrawPacketList();
 }
 
+#if DUSK_ONLINE
 // Online: publish the local player's transform to the peer each frame. The
 // remote player is rendered as a Link-model puppet from daAlink_c::draw().
 static void dusk_online_publishLocalTransform() {
@@ -860,10 +863,13 @@ static void dusk_online_publishLocalTransform() {
         dusk::online::set_local_transform(pos, player->shape_angle.y, /*isWolf=*/false);
     }
 }
+#endif
 
 int mDoGph_BeforeOfDraw() {
     dScnPly_BeforeOfPaint();
+#if DUSK_ONLINE
     dusk_online_publishLocalTransform();
+#endif
     return 1;
 }
 

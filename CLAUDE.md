@@ -31,6 +31,12 @@ cmd /c "`"$vcvars`" >nul 2>&1 && cmake -S `"$root`" -B `"$build`" && cmake --bui
 
 - Re-run the `cmake -S … -B …` configure step only when sources are added/removed
   (the file list is `files.cmake`); otherwise just `--build`.
+- **`-DDUSK_ONLINE=ON|OFF`** (default ON) gates the whole multiplayer layer. When
+  OFF, `DUSK_ONLINE_FILES` (online core + all `online/*` modules) are excluded from
+  the build and every engine hook compiles to nothing (`#if DUSK_ONLINE`), so the
+  decomp/original files are byte-identical to upstream. Verified: the game builds
+  and links cleanly with online disabled. Flipping the option triggers a full
+  rebuild (the macro is defined on every game TU).
 - Output: `build/windows-msvc-relwithdebinfo/dusklight.exe`. Close running
   instances before building or the linker can't overwrite the exe.
 - `build/` is gitignored. The `clang`/IDE "file not found / unknown type"
@@ -76,6 +82,7 @@ src/dusk/online/desync.cpp       RNG-checksum desync detector (op 33)
 src/dusk/online/snapshot.cpp     full dSv_save_c blob on join (op 34/35)
 src/dusk/online/voice.cpp        voice chat           (op 36)
 src/dusk/online/savesync.cpp     live flag/quest-item sync (op 37)
+src/dusk/online/enemy.cpp        host-authoritative enemy/boss sync (op 38)
 src/dusk/online/puppet.cpp       remote-player puppet rendering (no opcode)
 src/dusk/online/ui.cpp           ImGui panels + per-frame module pump
 src/dusk/test_input.cpp          synthetic UDP pad injector (DEV ONLY)
@@ -89,17 +96,21 @@ src/dusk/test_input.cpp          synthetic UDP pad injector (DEV ONLY)
 | 34/35 | kOpSnapshotReq/Snapshot | snapshot |
 | 36 | kOpVoice | voice |
 | 37 | kOpSaveSync | savesync |
+| 38 | kOpEnemySync | enemy |
 
 ---
 
 ## Engine hook points (edits to decompiled/original files)
 
 These are the **only** edits to faithfully-decompiled game files — kept thin on
-purpose (PR-mergeability). All real logic lives in `src/dusk/`.
+purpose (PR-mergeability). **Every one is wrapped in `#if DUSK_ONLINE`** (incl. the
+`#include`s), so with the CMake option OFF they vanish and the files are
+byte-identical to upstream. All real logic lives in `src/dusk/`.
 
 - `src/m_Do/m_Do_main.cpp` — per-frame game-thread pump: `savesync::frame_update()`,
-  `ui::frame_update()` (which runs snapshot poll + voice update), and
-  `desync::submit_local()` after each sim tick. Also `online::init()`/`shutdown()`.
+  `enemy::frame_update()`, `ui::frame_update()` (which runs snapshot poll + voice
+  update), and `desync::submit_local()` after each sim tick. Also
+  `online::init()`/`shutdown()`.
 - `src/m_Do/m_Do_controller_pad.cpp` — publish local pad (`set_local_input`) and
   inject remote pad into a second slot.
 - `src/m_Do/m_Do_graphic.cpp` — publish local transform (`set_local_transform`).
@@ -170,6 +181,36 @@ Per-player inventory + client→host upstream are future work.
 
 ---
 
+## Enemy/boss sync (`src/dusk/online/enemy.cpp`)
+
+Host-authoritative actor replication (op 38). The host walks the actor list each
+frame (`fopAcIt_Executor`), collects every **stage-placed enemy** and broadcasts a
+compact table of `(pos, facing, health)`; clients walk their own actor list and
+overwrite matched actors. Hard-won facts / design:
+
+1. **Net identity = `(profName, setID, room)`.** Stage-placed actors share these
+   across peers because every peer loads identical stage data — so no ID
+   negotiation is needed. `setID` (`fopAc_ac_c` @0x494) is the `.dzr`/`.dzs`
+   placement id; `0xFFFF` means "dynamically spawned" → **skipped for now** (full
+   spawn/despawn replication is future work).
+2. **Enemy filter:** `fopAcM_GetGroup(ac) == fopAc_ENEMY_e`. Most bosses are in the
+   ENEMY group too, so they ride along. (Boss-specific phase/flag state is not yet
+   streamed — only transform + health.)
+3. **State applied AFTER the sim**, on the game thread, from `m_Do_main`'s pump.
+   Clients still tick local enemy AI (it isn't suppressed), but the host's values
+   are written last each frame so the host wins. Expect minor local-AI churn
+   between updates; true AI suppression is future work.
+4. **Death is implicit:** when the host's `health` for an entry hits 0 the client
+   writes 0 into its actor and that actor's **own death logic** runs. The module
+   never force-deletes actors — staying out of the fpc lifecycle is what keeps this
+   safe and contained.
+5. **Wire:** `magic 'DENY' · ver · count(u16)` then `count` × 22-byte packed
+   `WireEnemy`. Sent at ~30 Hz (`kSendEveryNFrames=2`); table capped at
+   `kMaxEnemies=64` (logs `enemy table TRUNCATED` if exceeded).
+6. Same magic+version validation as savesync/snapshot before any apply.
+
+---
+
 ## Conventions & gotchas
 - Git on this machine warns LF→CRLF on the dusk files; harmless.
 - Inbound network data writes into save memory — every payload is magic+version
@@ -186,9 +227,10 @@ Per-player inventory + client→host upstream are future work.
 **A. PR-readiness (to upstream cleanly into TwilitRealm/dusklight):**
 1. ✅ Extract puppet rendering out of `d_a_alink.cpp` into `online/puppet.cpp`
    (decomp footprint 254→27 lines). DONE.
-2. Gate everything behind a CMake `option(DUSK_ONLINE ...)` and wrap the thin
-   decomp-file hooks in `#if DUSK_ONLINE`, so original files are byte-identical when
-   off.
+2. ✅ Gate everything behind a CMake `option(DUSK_ONLINE ...)` and wrap the thin
+   decomp-file hooks (and their includes) in `#if DUSK_ONLINE`. Online sources live
+   in `DUSK_ONLINE_FILES` (files.cmake), appended only when the option is ON.
+   Verified the game builds + links with `-DDUSK_ONLINE=OFF`. DONE.
 3. **Cross-platform transport** (blocker for a PC/Android/iOS repo): abstract the
    socket layer with platform backends like `src/dusk/http/` does
    (winhttp/android/url_session/no_backend) — BSD sockets for POSIX, winsock for
@@ -201,11 +243,14 @@ Per-player inventory + client→host upstream are future work.
    `docs/online.md`; open an RFC issue before the big PR.
 
 **B. Features (gameplay):**
-- **Enemy/boss sync** (`../PLAN.md` §3, the headline): host-authoritative actor
-  replication — host simulates enemies, clients suppress enemy AI and drive them
-  from streamed state (pos/angle/`health`@0x562/anim/action). Needs stable net IDs +
-  spawn/despawn replication + damage/death attribution + boss phases. Same pattern
-  as the player puppet, scaled to `fopAc_ac_c` actors.
+- ✅ **Enemy/boss sync MVP** (`online/enemy.cpp`, op 38): host streams
+  pos/facing/`health`@0x562 for stage-placed enemies, clients overwrite by
+  `(profName,setID,room)` key; death is implicit via health=0. DONE. Remaining work:
+  (a) **AI suppression** on clients (currently local AI still ticks → minor churn);
+  (b) **spawn/despawn replication** for dynamically-created enemies (setID 0xFFFF,
+  currently skipped); (c) **damage/death attribution** so client hits don't diverge;
+  (d) **boss phase/flag/action** streaming (only transform+health today);
+  (e) **anim id/frame** streaming for matched poses.
 - **Sub-model joint streaming**: stream hat/hand joint matrices so hair sway and
   finger articulation sync (currently bind pose).
 - **Per-player inventory** + client→host save upstream (vs the current shared model).

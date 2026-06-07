@@ -1433,24 +1433,8 @@ set(DUSK_FILES
         src/dusk/globals.cpp
         src/dusk/gyro.cpp
         src/dusk/mouse.cpp
-        include/dusk/online.h
-        src/dusk/online.cpp
         include/dusk/test_input.h
         src/dusk/test_input.cpp
-        include/dusk/online_chat.h
-        include/dusk/online_desync.h
-        include/dusk/online_snapshot.h
-        include/dusk/online_savesync.h
-        include/dusk/online_puppet.h
-        include/dusk/online_voice.h
-        include/dusk/online_ui.h
-        src/dusk/online/chat.cpp
-        src/dusk/online/desync.cpp
-        src/dusk/online/snapshot.cpp
-        src/dusk/online/savesync.cpp
-        src/dusk/online/puppet.cpp
-        src/dusk/online/voice.cpp
-        src/dusk/online/ui.cpp
 		src/dusk/gamepad_color.cpp
 		src/dusk/autosave.cpp
         src/dusk/http/http.hpp
@@ -1548,6 +1532,30 @@ set(DUSK_FILES
         src/dusk/discord_presence.cpp
         src/dusk/version.cpp
         src/dusk/action_bindings.cpp
+)
+
+# Online multiplayer layer. Compiled only when the DUSK_ONLINE CMake option is ON
+# (see CMakeLists.txt); the thin engine hooks that reference it are guarded by
+# `#if DUSK_ONLINE`, so the game builds byte-identically with online disabled.
+set(DUSK_ONLINE_FILES
+        include/dusk/online.h
+        include/dusk/online_chat.h
+        include/dusk/online_desync.h
+        include/dusk/online_snapshot.h
+        include/dusk/online_savesync.h
+        include/dusk/online_enemy.h
+        include/dusk/online_puppet.h
+        include/dusk/online_voice.h
+        include/dusk/online_ui.h
+        src/dusk/online.cpp
+        src/dusk/online/chat.cpp
+        src/dusk/online/desync.cpp
+        src/dusk/online/snapshot.cpp
+        src/dusk/online/savesync.cpp
+        src/dusk/online/enemy.cpp
+        src/dusk/online/puppet.cpp
+        src/dusk/online/voice.cpp
+        src/dusk/online/ui.cpp
 )
 
 set(DUSK_HTTP_BACKEND_FILES

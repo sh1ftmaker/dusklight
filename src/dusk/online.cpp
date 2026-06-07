@@ -406,6 +406,7 @@ void init() {
     modules::init_desync();
     modules::init_snapshot();
     modules::init_savesync();
+    modules::init_enemy();
     modules::init_voice();
 
 #if DUSK_ONLINE_SOCKETS

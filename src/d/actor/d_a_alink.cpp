@@ -55,8 +55,10 @@
 #include "dusk/action_bindings.h"
 #include "dusk/frame_interpolation.h"
 #include "dusk/logging.h"
+#if DUSK_ONLINE
 #include "dusk/online.h"
 #include "dusk/online_puppet.h"
+#endif
 #include "dusk/settings.h"
 #include "res/Object/Alink.h"
 #include <cstring>
@@ -2447,11 +2449,13 @@ bool daAlink_c::modelCallBack(int i_jointNo) {
 }
 
 static int daAlink_modelCallBack(J3DJoint* i_joint, int param_1) {
+#if DUSK_ONLINE
     // Online: a remote-player puppet shares this model data; let the puppet pass
     // inject its streamed pose and skip the local joint control. See online/puppet.
     if (dusk::online::puppet::body_joint_hook(i_joint, param_1)) {
         return 1;
     }
+#endif
     J3DJoint* joint = i_joint;
     int jntNo = joint->getJntNo();
     daAlink_c* i_this = (daAlink_c*)j3dSys.getModel()->getUserArea();
@@ -2511,10 +2515,12 @@ int daAlink_c::headModelCallBack(int i_jointNo) {
 }
 
 static int daAlink_headModelCallBack(J3DJoint* i_joint, int param_1) {
+#if DUSK_ONLINE
     // Online: skip the local hair physics for a remote-player puppet head.
     if (dusk::online::puppet::head_joint_hook()) {
         return 1;
     }
+#endif
     J3DJoint* joint = i_joint;
     int joint_no = joint->getJntNo();
     daAlink_c* i_this = (daAlink_c*)j3dSys.getModel()->getUserArea();
@@ -2539,10 +2545,12 @@ int daAlink_c::wolfModelCallBack(int i_jointNo) {
 }
 
 static int daAlink_wolfModelCallBack(J3DJoint* i_joint, int param_1) {
+#if DUSK_ONLINE
     // Online: inject the streamed pose for a remote-player puppet (wolf form).
     if (dusk::online::puppet::body_joint_hook(i_joint, param_1)) {
         return 1;
     }
+#endif
     J3DJoint* joint = i_joint;
     int joint_no = joint->getJntNo();
     daAlink_c* i_this = (daAlink_c*)j3dSys.getModel()->getUserArea();
@@ -19844,6 +19852,7 @@ int daAlink_c::draw() {
         dComIfGd_entryZSortXluList(&m_swordBlur, m_swordBlur.field_0x308[0]);
     }
 
+#if DUSK_ONLINE
     // Online: publish our skeleton for peers and render each remote player's
     // puppet. All logic lives in dusk::online::puppet; this is just the hook. The
     // create thunk hands the module daAlink_c::initModelEnv (warp-material aware).
@@ -19854,6 +19863,7 @@ int daAlink_c::draw() {
         dusk::online::puppet::update_and_draw(this, createPuppet, mpLinkModel, mpLinkHatModel,
                                               mpLinkHandModel, mpLinkFaceModel, checkWolf());
     }
+#endif
 
     return 1;
 }

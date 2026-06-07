@@ -147,6 +147,7 @@ option(DUSK_BUILD_WARNINGS "Enable compiler warnings (off by default)")
 option(DUSK_SELECTED_OPT "If on, selected parts of the project will be compiled with optimizations on Debug, intending to make the game run at 30 FPS. Note for MSVC: you will need to remove '/RTC1' from your debug flags in CMake.")
 option(DUSK_MOVIE_SUPPORT "If on, compile against libjpeg-turbo to enable THP file decoding" ON)
 option(DUSK_ENABLE_UPDATE_CHECKER "Enable update checking support" ON)
+option(DUSK_ONLINE "Enable online multiplayer (host-authoritative netplay)" ON)
 option(DUSK_ENABLE_SENTRY_NATIVE "Enable sentry-native crash reporting support" OFF)
 option(DUSK_GFX_DEBUG_GROUPS "Report debug groups to the native graphics API" ${DUSK_GFX_DEBUG_GROUPS_DEFAULT})
 set(DUSK_SENTRY_DSN "" CACHE STRING "Sentry DSN")
@@ -337,6 +338,18 @@ source_group("dolzel" FILES ${DOLZEL_FILES} ${Z2AUDIOLIB_FILES} ${REL_FILES})
 source_group("dusklight" FILES ${DUSK_FILES} ${DUSK_HTTP_BACKEND_FILES})
 
 set(GAME_COMPILE_DEFS TARGET_PC WIDESCREEN_SUPPORT=1 AVOID_UB=1 VERSION=0 MTX_USE_PS=1)
+
+# Online multiplayer: compile the layer's sources only when enabled, and define
+# DUSK_ONLINE (0/1) for every game translation unit so the thin engine hooks
+# (`#if DUSK_ONLINE`) vanish when the feature is off, leaving original files intact.
+if (DUSK_ONLINE)
+    list(APPEND GAME_COMPILE_DEFS DUSK_ONLINE=1)
+    list(APPEND DUSK_FILES ${DUSK_ONLINE_FILES})
+    message(STATUS "dusklight: Online multiplayer enabled")
+else ()
+    list(APPEND GAME_COMPILE_DEFS DUSK_ONLINE=0)
+    message(STATUS "dusklight: Online multiplayer disabled")
+endif ()
 
 set(GAME_INCLUDE_DIRS
     include
