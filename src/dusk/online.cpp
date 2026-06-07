@@ -38,7 +38,6 @@ namespace {
 Mode g_mode = Mode::Off;
 std::string g_hostAddr = "127.0.0.1";
 uint16_t g_port = 7777;
-float g_puppetOffset = 0.0f;
 std::string g_localName;
 uint8_t g_localColor[3] = {255, 255, 255};
 
@@ -379,9 +378,6 @@ void init() {
     if (const char* h = std::getenv("DUSK_ONLINE_HOST")) {
         if (h[0]) g_hostAddr = h;
     }
-    if (const char* o = std::getenv("DUSK_ONLINE_PUPPET_OFFSET")) {
-        g_puppetOffset = (float)std::atof(o);
-    }
     if (const char* n = std::getenv("DUSK_ONLINE_NAME")) {
         if (n[0]) g_localName = n;
     }
@@ -567,6 +563,5 @@ void send_message(uint8_t opcode, const void* data, uint32_t len) {
 }
 
 uint64_t local_tick() { return g_localTick.load(); }
-float puppet_offset() { return g_puppetOffset; }
 
 }  // namespace dusk::online

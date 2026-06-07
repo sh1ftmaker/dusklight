@@ -15,7 +15,6 @@
 //   DUSK_ONLINE_PORT = <tcp port>            (default 7777)
 //   DUSK_ONLINE_HOST = <addr>                (default 127.0.0.1, client only)
 //   DUSK_ONLINE_NAME = <display name>        (default: random from name pool)
-//   DUSK_ONLINE_PUPPET_OFFSET = <world units> (debug: offset remote puppet)
 namespace dusk::online {
 
 enum class Mode { Off, Host, Client };
@@ -101,7 +100,6 @@ void send_message(uint8_t opcode, const void* data, uint32_t len);
 
 // ---- misc ----
 uint64_t local_tick();
-float puppet_offset();
 
 // Feature-module init hooks. Each module defines one of these in its own .cpp;
 // the core calls them all from init() so modules register their handlers.

@@ -50,6 +50,12 @@ bool s_puppetCalc = false;
 const f32* s_puppetJoints = NULL;
 int        s_puppetJointCount = 0;
 
+// Where each remote player's puppet was actually drawn this frame (its body base
+// translation), keyed by player id, so the nameplate overlay can anchor exactly to
+// the rendered puppet instead of re-deriving from the streamed transform.
+float s_puppetWorldPos[kMaxPlayers][3] = {};
+bool  s_puppetPosValid[kMaxPlayers] = {};
+
 // Drive one puppet joint from the streamed pose during calc(). Runs at callback
 // phase 0, where the joint's world matrix has just been computed and
 // J3DSys::mCurrentMtx holds it; overriding both sets this joint absolutely and
@@ -80,9 +86,19 @@ bool head_joint_hook() {
     return s_puppetCalc;
 }
 
+bool get_puppet_world_pos(int playerId, float out[3]) {
+    if (playerId < 0 || playerId >= kMaxPlayers || !s_puppetPosValid[playerId]) return false;
+    out[0] = s_puppetWorldPos[playerId][0];
+    out[1] = s_puppetWorldPos[playerId][1];
+    out[2] = s_puppetWorldPos[playerId][2];
+    return true;
+}
+
 void update_and_draw(void* ctx, ModelCreateFn create,
                      J3DModel* bodyModel, J3DModel* hatModel,
                      J3DModel* handModel, J3DModel* faceModel, bool isWolf) {
+    // Invalidate last frame's puppet anchors; each drawn puppet re-sets its own.
+    for (int i = 0; i < kMaxPlayers; i++) s_puppetPosValid[i] = false;
     if (bodyModel == NULL) return;
 
     // --- publish our skeleton (model-space base TR + joint matrices) ---
@@ -193,7 +209,6 @@ void update_and_draw(void* ctx, ModelCreateFn create,
         if (havePose) {
             Mtx bt;
             memcpy(bt, s_rbase, 12 * sizeof(f32));
-            bt[0][3] += puppet_offset();  // debug lateral offset
             // Feed the streamed pose through the joint callbacks during calc() so
             // envelopes, normal/bump matrices, and the interp snapshot are all
             // consistent with it (no post-calc overwrite).
@@ -204,10 +219,21 @@ void update_and_draw(void* ctx, ModelCreateFn create,
             s_puppetJoints = NULL;
             s_puppetJointCount = 0;
         } else {
-            mDoMtx_stack_c::transS(rp->pos[0] + puppet_offset(), rp->pos[1], rp->pos[2]);
+            mDoMtx_stack_c::transS(rp->pos[0], rp->pos[1], rp->pos[2]);
             mDoMtx_stack_c::YrotM(rp->angleY);
             model->setBaseTRMtx(mDoMtx_stack_c::get());
             model->calc();
+        }
+
+        // Record the puppet's drawn world position (body base translation) so the
+        // nameplate overlay anchors exactly to the rendered puppet. Mtx is row-major
+        // f32[3][4]; translation is elements [3],[7],[11].
+        if (rp->id >= 0 && rp->id < kMaxPlayers) {
+            const f32* base = reinterpret_cast<const f32*>(model->getBaseTRMtx());
+            s_puppetWorldPos[rp->id][0] = base[3];
+            s_puppetWorldPos[rp->id][1] = base[7];
+            s_puppetWorldPos[rp->id][2] = base[11];
+            s_puppetPosValid[rp->id] = true;
         }
 
         // Attach the sub-models to the now-posed body skeleton, exactly like the
@@ -230,7 +256,7 @@ void update_and_draw(void* ctx, ModelCreateFn create,
         }
         s_puppetCalc = false;
 
-        cXyz ppos(rp->pos[0] + puppet_offset(), rp->pos[1], rp->pos[2]);
+        cXyz ppos(rp->pos[0], rp->pos[1], rp->pos[2]);
         // Shade the puppet IDENTICALLY to the real player: pick the env-light TEV
         // preset by form, then zero the custom additive TEV color registers (the
         // effect of daAlink_c::initTevCustomColor). A non-zero TevColor adds
@@ -244,21 +270,23 @@ void update_and_draw(void* ctx, ModelCreateFn create,
         tevstr.TevKColor.r = 0;
         tevstr.TevKColor.b = 0;
         // Per-player "colored clothes" (à la TP Online): tint the BODY model toward
-        // the peer's color so each puppet is visually distinct. We scale the ambient
-        // color channel — a multiply on the lit result — rather than the additive
-        // TEV color, so the tunic *recolors* instead of washing out to a glow. The
-        // head/hands/face keep the neutral tevstr so skin and hair stay natural.
-        // White (255,255,255 default identity) leaves the body unchanged.
+        // the peer's color so each puppet is visually distinct. The additive TEV
+        // color register is the proven per-instance lever here — zeroing it above is
+        // exactly what removed the old wash-out, and AmbCol had no visible effect on
+        // Link's materials. To get a *hue* (not just an overall brightening, since
+        // the name-hash colors are all 128–255), we subtract the min channel so only
+        // the dominant color(s) are added. Head/hands/face keep the neutral tevstr so
+        // skin and hair stay natural.
         dKy_tevstr_c bodyTev;
         memcpy(&bodyTev, &tevstr, sizeof(dKy_tevstr_c));
         {
-            const float k = 0.65f;  // tint strength toward the player color
-            const float fr = (1.0f - k) + k * (rp->colorR / 255.0f);
-            const float fg = (1.0f - k) + k * (rp->colorG / 255.0f);
-            const float fb = (1.0f - k) + k * (rp->colorB / 255.0f);
-            bodyTev.AmbCol.r = (s16)(bodyTev.AmbCol.r * fr);
-            bodyTev.AmbCol.g = (s16)(bodyTev.AmbCol.g * fg);
-            bodyTev.AmbCol.b = (s16)(bodyTev.AmbCol.b * fb);
+            const float strength = 0.75f;  // additive tint strength (tunable)
+            uint8_t mn = rp->colorR;
+            if (rp->colorG < mn) mn = rp->colorG;
+            if (rp->colorB < mn) mn = rp->colorB;
+            bodyTev.TevColor.r = (s16)((rp->colorR - mn) * strength);
+            bodyTev.TevColor.g = (s16)((rp->colorG - mn) * strength);
+            bodyTev.TevColor.b = (s16)((rp->colorB - mn) * strength);
         }
         g_env_light.setLightTevColorType_MAJI(model, &bodyTev);
         mDoExt_modelEntryDL(model);
@@ -287,8 +315,14 @@ void update_and_draw(void* ctx, ModelCreateFn create,
         if (groundH != -G_CM3D_F_INF) {
             cXyz shadowCenter(ppos.x, rp->pos[1], ppos.z);
             u32& shadowKey = s_puppetShadowKeys[i];
+            // setShadow derives the height-above-ground as (param6 - param7). Passing
+            // the feet Y for both made it ~0 → realPolygonCheck found no receiver and
+            // no shadow drew. Use a torso reference point above the feet (like the
+            // real Link, which uses its body-cylinder centers) so there's a real
+            // projection volume; it also fades correctly as the puppet jumps.
+            const f32 bodyRefY = rp->pos[1] + 100.0f;
             shadowKey = dComIfGd_setShadow(shadowKey, 0, model, &shadowCenter,
-                                           800.0f, 0.0f, rp->pos[1], groundH, gndChk,
+                                           800.0f, 0.0f, bodyRefY, groundH, gndChk,
                                            &tevstr, 0, 1.0f,
                                            dDlst_shadowControl_c::getSimpleTex());
             if (shadowKey != 0) {

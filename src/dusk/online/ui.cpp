@@ -11,6 +11,7 @@
 #include "dusk/online_chat.h"
 #include "dusk/online_desync.h"
 #include "dusk/online_snapshot.h"
+#include "dusk/online_puppet.h"
 #include "dusk/online_voice.h"
 
 #include "imgui.h"
@@ -65,7 +66,15 @@ void draw_nameplates() {
         const PlayerState* rp = remote_player(i);
         if (rp == nullptr) continue;
 
-        Vec head = {rp->pos[0] + puppet_offset(), rp->pos[1] + kNameplateHeight, rp->pos[2]};
+        // Anchor to the puppet's actual drawn position when available (exact match);
+        // fall back to the streamed transform if it wasn't drawn this frame.
+        float wp[3];
+        Vec head;
+        if (puppet::get_puppet_world_pos(rp->id, wp)) {
+            head = {wp[0], wp[1] + kNameplateHeight, wp[2]};
+        } else {
+            head = {rp->pos[0], rp->pos[1] + kNameplateHeight, rp->pos[2]};
+        }
 
         // Skip when behind the camera. In view space the camera looks down -Z
         // (GC convention), so a visible point has negative Z.
@@ -177,9 +186,6 @@ void draw() {
                 ImGui::TextDisabled("applying...");
             }
         }
-
-        ImGui::Separator();
-        ImGui::TextDisabled("puppet offset: %.0f (DUSK_ONLINE_PUPPET_OFFSET)", puppet_offset());
     }
     ImGui::End();
 }

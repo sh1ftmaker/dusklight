@@ -24,6 +24,11 @@ using ModelCreateFn = J3DModel* (*)(void* ctx, J3DModelData* data, unsigned int 
 bool body_joint_hook(J3DJoint* joint, int phase);
 bool head_joint_hook();
 
+// World position the given player's puppet was last drawn at (body base), for the
+// nameplate overlay to anchor to. Returns false if that puppet wasn't drawn this
+// frame. out[3] is x,y,z.
+bool get_puppet_world_pos(int playerId, float out[3]);
+
 // Called once per frame from daAlink_c::draw(): publishes the local skeleton for
 // peers and renders every remote player's puppet. ctx/create/bodyModel are the
 // local player's; hatModel/handModel/faceModel are NULL in wolf form.
