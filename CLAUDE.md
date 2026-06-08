@@ -50,6 +50,16 @@ own Link). Local two-player test: `../test-two-players.bat` (disc baked in). The
 `../online-input.ps1` + `../drive-to-gameplay.ps1` scripts drive instances into
 gameplay via synthetic UDP input for autonomous testing.
 
+**Room discovery (optional directory server).** Set `DUSK_ONLINE_DIRECTORY=addr[:port]`
+(default port 7778) and a host advertises its room there while clients resolve a
+host ip:port from the list instead of needing `DUSK_ONLINE_HOST`. Host names its
+room with `DUSK_ONLINE_ROOMNAME` (default `"<name>'s room"`); a client selects with
+`DUSK_ONLINE_ROOM` (numeric index into the list, or a name substring; default =
+first compatible room). The directory is a **phone book, not a relay** — once a
+client picks a room it connects directly to that host's ip:port via the normal
+transport, so the host must be reachable (LAN or port-forwarded). See "Room
+directory" below.
+
 ---
 
 ## Architecture
@@ -84,7 +94,10 @@ src/dusk/online/voice.cpp        voice chat           (op 36)
 src/dusk/online/savesync.cpp     live flag/quest-item sync (op 37)
 src/dusk/online/enemy.cpp        host-authoritative enemy/boss sync (op 38)
 src/dusk/online/puppet.cpp       remote-player puppet rendering (no opcode)
+src/dusk/online/ping.cpp         map "look here" pings (op 39)
+src/dusk/online/directory.cpp    room-discovery client (separate directory protocol)
 src/dusk/online/ui.cpp           ImGui panels + per-frame module pump
+tools/dusk_directory/main.cpp    standalone room directory server
 src/dusk/test_input.cpp          synthetic UDP pad injector (DEV ONLY)
 ```
 
@@ -237,6 +250,38 @@ overwrite matched actors. Hard-won facts / design:
 6. Same magic+version validation as savesync/snapshot before any apply.
 
 ---
+
+## Room directory — discovery (`src/dusk/online/directory.cpp`, `tools/dusk_directory/`)
+
+A lightweight **directory ("phone book") server** lets clients find hosts without
+knowing an IP up front. It is deliberately NOT a relay: it only stores room
+listings; gameplay stays peer-to-peer over the existing transport.
+
+- **Wire protocol** (`include/dusk/online_directory.h`, shared by game + server):
+  frames are `[magic u32 'DLBY'][ver u16][op u8][len u32][payload]`. Ops:
+  `kMsgRegister` (host→server, one `RoomInfo`), `kMsgList` (client→server, empty),
+  `kMsgRoomList` (server→client, `[count u16][count × RoomInfo]`). `RoomInfo` is a
+  fixed 96-byte packed record (id, gamePort, cur/maxPlayers, protocolVersion,
+  name[32], host[46], stage[8]).
+- **The server** (`tools/dusk_directory/main.cpp`) is a standalone, engine-free,
+  cross-platform (winsock/BSD) thread-per-connection program, built as its own
+  CMake target `dusk_directory` when `DUSK_ONLINE` is on. Run: `dusk_directory [port]`
+  (default 7778). **A room's lifetime = the host's registration TCP connection** —
+  no heartbeat timer; the room is dropped when that socket closes. The server fills
+  `RoomInfo.host` from the connection's source address (clients can't spoof it).
+- **Game side** (`online/directory.cpp`, winsock-guarded like online.cpp):
+  - `run_host_registration(...)` — host thread, started from `io_thread_main` when a
+    directory is configured. Reconnects on drop; re-sends an updated `RoomInfo`
+    (live `player_count()` + local `stage`) every ~2s.
+  - `fetch_rooms(...)` — one-shot blocking client query (with a bounded connect
+    timeout so a dead directory never stalls the IO thread).
+  - `online.cpp` orchestrates: the client `io_thread` calls
+    `resolve_room_from_directory()` before each connect, which filters by gameplay
+    `protocolVersion`, applies the `DUSK_ONLINE_ROOM` selection, and sets
+    `g_hostAddr`/`g_port`. The last fetched list is exposed via `directory_rooms()`
+    for the F7 overlay (read-only browser; click-to-join is future work).
+- **Not solved here:** NAT traversal (hosts still need a reachable ip:port) and the
+  N>2-player relay. The directory is the discovery layer those would build on.
 
 ## Conventions & gotchas
 - Git on this machine warns LF→CRLF on the dusk files; harmless.

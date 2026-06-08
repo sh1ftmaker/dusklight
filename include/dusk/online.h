@@ -111,6 +111,15 @@ void register_handler(uint8_t opcode, MessageHandler fn);
 // Send a framed message to the connected peer(s). Safe from any thread.
 void send_message(uint8_t opcode, const void* data, uint32_t len);
 
+// ---- room directory (discovery) ----
+namespace directory { struct RoomInfo; }
+// "addr:port" of the configured directory server, or "" when none is in use.
+const char* directory_address();
+// This host's advertised room name (host mode).
+const char* room_name();
+// Copies up to `max` rooms from the last list a client fetched; returns the count.
+int directory_rooms(directory::RoomInfo* out, int max);
+
 // ---- misc ----
 uint64_t local_tick();
 

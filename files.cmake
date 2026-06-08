@@ -1547,9 +1547,12 @@ set(DUSK_ONLINE_FILES
         include/dusk/online_puppet.h
         include/dusk/online_voice.h
         include/dusk/online_ping.h
+        include/dusk/online_directory.h
+        include/dusk/online_directory_client.h
         include/dusk/online_ui.h
         src/dusk/online.cpp
         src/dusk/online/chat.cpp
+        src/dusk/online/directory.cpp
         src/dusk/online/desync.cpp
         src/dusk/online/snapshot.cpp
         src/dusk/online/savesync.cpp

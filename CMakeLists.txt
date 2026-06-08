@@ -524,6 +524,22 @@ if (CMAKE_SYSTEM_NAME STREQUAL Linux)
     target_link_options(dusklight PRIVATE "-Wl,--build-id=sha1")
 endif ()
 
+# Standalone room directory server (Dusk Online discovery). A tiny self-contained
+# TCP service with no engine dependencies — only the shared wire header. Built
+# alongside the game when online is enabled and we're not cross-compiling to a
+# console-less mobile target. See tools/dusk_directory/main.cpp.
+if (DUSK_ONLINE AND NOT ANDROID AND NOT IOS AND NOT TVOS)
+    add_executable(dusk_directory tools/dusk_directory/main.cpp)
+    target_include_directories(dusk_directory PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_features(dusk_directory PRIVATE cxx_std_17)
+    if (WIN32)
+        target_link_libraries(dusk_directory PRIVATE ws2_32)
+    else ()
+        find_package(Threads REQUIRED)
+        target_link_libraries(dusk_directory PRIVATE Threads::Threads)
+    endif ()
+endif ()
+
 if (NOT APPLE)
     add_custom_command(TARGET dusklight POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory

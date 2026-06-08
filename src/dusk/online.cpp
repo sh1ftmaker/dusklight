@@ -8,9 +8,11 @@
 
 #include "dusk/online.h"
 #include "dusk/online_chat.h"
+#include "dusk/online_directory_client.h"
 #include "dusk/logging.h"
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -42,6 +44,17 @@ std::string g_hostAddr = "127.0.0.1";
 uint16_t g_port = 7777;
 std::string g_localName;
 uint8_t g_localColor[3] = {255, 255, 255};
+
+// --- room directory (discovery) ---
+// When g_dirAddr is non-empty a directory server is in use: the host advertises
+// its room there and clients resolve a host ip:port from it before connecting.
+std::string g_dirAddr;                       // empty = directory disabled
+uint16_t g_dirPort = directory::kDefaultPort;
+std::string g_roomName;                      // host: advertised room name
+std::string g_roomSel;                       // client: selection (index or name substring)
+std::thread g_dirThread;                     // host registration loop
+std::mutex g_roomListMutex;
+std::vector<directory::RoomInfo> g_lastRoomList;  // last list a client fetched (for the UI)
 
 int g_localId = 0;
 int g_remoteId = 1;
@@ -400,17 +413,94 @@ void run_session(socket_t peer) {
     }
 }
 
+// Case-insensitive "does haystack contain needle".
+bool icontains(const char* haystack, const std::string& needle) {
+    if (needle.empty()) return true;
+    std::string h(haystack);
+    std::string n = needle;
+    auto lower = [](std::string& s) { for (char& c : s) c = (char)std::tolower((unsigned char)c); };
+    lower(h);
+    lower(n);
+    return h.find(n) != std::string::npos;
+}
+
+// Client: query the directory and pick a room into g_hostAddr/g_port. Selection
+// (DUSK_ONLINE_ROOM): a numeric index, or a name substring; empty = first room.
+// Rooms whose gameplay protocol differs from ours are skipped. Returns false (and
+// sets a status) when the directory is unreachable or no matching room exists yet.
+bool resolve_room_from_directory() {
+    std::vector<directory::RoomInfo> rooms;
+    if (!directory::fetch_rooms(g_dirAddr.c_str(), g_dirPort, rooms)) {
+        set_status("directory unreachable (" + g_dirAddr + ")");
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_roomListMutex);
+        g_lastRoomList = rooms;
+    }
+    // Drop protocol-mismatched rooms before selecting.
+    std::vector<directory::RoomInfo> usable;
+    for (const auto& r : rooms)
+        if (r.protocolVersion == kProtocolVersion) usable.push_back(r);
+    if (usable.empty()) {
+        set_status(rooms.empty() ? "no rooms found" : "no compatible rooms");
+        return false;
+    }
+
+    const directory::RoomInfo* chosen = nullptr;
+    if (g_roomSel.empty()) {
+        chosen = &usable[0];
+    } else {
+        // Numeric? treat as an index into the usable list.
+        char* end = nullptr;
+        long idx = std::strtol(g_roomSel.c_str(), &end, 10);
+        if (end && *end == '\0' && idx >= 0 && idx < (long)usable.size()) {
+            chosen = &usable[(size_t)idx];
+        } else {
+            for (const auto& r : usable)
+                if (icontains(r.name, g_roomSel)) { chosen = &r; break; }
+        }
+    }
+    if (!chosen) {
+        set_status("room '" + g_roomSel + "' not found");
+        return false;
+    }
+
+    g_hostAddr = chosen->host;
+    g_port = chosen->gamePort;
+    set_status(std::string("joining '") + chosen->name + "' @ " + g_hostAddr);
+    DuskLog.info("[online] directory resolved room '{}' -> {}:{}",
+                 chosen->name, g_hostAddr, g_port);
+    return true;
+}
+
 void io_thread_main() {
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         set_status("WSAStartup failed");
         return;
     }
+    // Host with a directory configured: keep our room advertised in the background
+    // for its whole lifetime (separate connection from the gameplay listener).
+    if (g_mode == Mode::Host && !g_dirAddr.empty()) {
+        g_dirThread = std::thread(directory::run_host_registration, g_dirAddr, g_dirPort,
+                                  g_roomName, g_port, (uint8_t)kMaxPlayers,
+                                  [] { return g_running.load(); });
+    }
     // Reconnect loop: after a session ends, the host goes back to listening and
     // the client retries connecting, so a dropped peer can rejoin without either
     // side restarting. Both accept_host()/connect_client() return only on a
     // successful connection or when g_running clears (shutdown).
     while (g_running.load()) {
+        // Client with a directory: resolve a live host from it before each connect
+        // attempt. Retry until a room appears (or shutdown).
+        if (g_mode == Mode::Client && !g_dirAddr.empty()) {
+            if (!resolve_room_from_directory()) {
+                for (int i = 0; i < 20 && g_running.load(); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
+        }
         socket_t peer = (g_mode == Mode::Host) ? accept_host() : connect_client();
         if (peer == kInvalidSocket) break;  // g_running went false during the wait
         run_session(peer);
@@ -451,6 +541,31 @@ void init() {
     }
     if (g_localName.empty()) g_localName = pick_random_name();
     pick_color_from_name(g_localName, g_localColor);
+
+    // Room directory: DUSK_ONLINE_DIRECTORY = "addr" or "addr:port". When set, the
+    // host advertises its room (DUSK_ONLINE_ROOMNAME, default "<name>'s room") and
+    // the client resolves a host from the list (DUSK_ONLINE_ROOM = index or name
+    // substring; default = first room) instead of using DUSK_ONLINE_HOST directly.
+    if (const char* d = std::getenv("DUSK_ONLINE_DIRECTORY")) {
+        if (d[0]) {
+            std::string spec = d;
+            auto colon = spec.rfind(':');
+            if (colon != std::string::npos) {
+                g_dirAddr = spec.substr(0, colon);
+                int v = std::atoi(spec.c_str() + colon + 1);
+                if (v > 0 && v < 65536) g_dirPort = (uint16_t)v;
+            } else {
+                g_dirAddr = spec;
+            }
+        }
+    }
+    if (const char* rn = std::getenv("DUSK_ONLINE_ROOMNAME")) {
+        if (rn[0]) g_roomName = rn;
+    }
+    if (g_roomName.empty()) g_roomName = g_localName + "'s room";
+    if (const char* rs = std::getenv("DUSK_ONLINE_ROOM")) {
+        if (rs[0]) g_roomSel = rs;
+    }
 
     g_localId = (g_mode == Mode::Host) ? 0 : 1;
     g_remoteId = (g_mode == Mode::Host) ? 1 : 0;
@@ -498,7 +613,26 @@ void shutdown() {
     }
 #endif
     if (g_thread.joinable()) g_thread.join();
+    if (g_dirThread.joinable()) g_dirThread.join();
     g_connected.store(false);
+}
+
+const char* directory_address() {
+    static thread_local std::string snap;
+    if (g_dirAddr.empty()) return "";
+    snap = g_dirAddr + ":" + std::to_string(g_dirPort);
+    return snap.c_str();
+}
+
+const char* room_name() { return g_roomName.c_str(); }
+
+int directory_rooms(directory::RoomInfo* out, int max) {
+    if (!out || max <= 0) return 0;
+    std::lock_guard<std::mutex> lk(g_roomListMutex);
+    int n = (int)g_lastRoomList.size();
+    if (n > max) n = max;
+    for (int i = 0; i < n; ++i) out[i] = g_lastRoomList[i];
+    return n;
 }
 
 Mode mode() { return g_mode; }

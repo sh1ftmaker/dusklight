@@ -16,6 +16,7 @@
 #include "dusk/online_puppet.h"
 #include "dusk/online_voice.h"
 #include "dusk/online_ping.h"
+#include "dusk/online_directory.h"
 
 #include "imgui.h"
 
@@ -284,6 +285,28 @@ void draw() {
         ImGui::SameLine();
         ImGui::TextDisabled("  tick %llu", (unsigned long long)local_tick());
         ImGui::Separator();
+
+        // --- Room directory (discovery) ------------------------------------
+        if (directory_address()[0]) {
+            ImGui::Text("Directory: %s", directory_address());
+            if (mode() == Mode::Host) {
+                ImGui::TextDisabled("  advertising \"%s\"", room_name());
+            } else {
+                directory::RoomInfo rooms[16];
+                int n = directory_rooms(rooms, 16);
+                if (n == 0) {
+                    ImGui::TextDisabled("  no rooms found");
+                }
+                for (int i = 0; i < n; ++i) {
+                    const directory::RoomInfo& r = rooms[i];
+                    char stage[9] = {0};
+                    std::memcpy(stage, r.stage, 8);
+                    ImGui::BulletText("%s  %s:%u  (%u/%u)  %s", r.name, r.host, r.gamePort,
+                                      r.curPlayers, r.maxPlayers, stage[0] ? stage : "?");
+                }
+            }
+            ImGui::Separator();
+        }
 
         // --- Toggles & actions ---------------------------------------------
         ImGui::Checkbox("Nameplates", &s_showNameplates);
