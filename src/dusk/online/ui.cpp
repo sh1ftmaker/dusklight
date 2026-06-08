@@ -2,9 +2,9 @@
  * online/ui.cpp — in-game ImGui surface + per-frame module pump for the online
  * features. Owned by the core integration layer (not a plug-in feature module):
  * it pulls together chat, desync, voice, snapshot, and pings into one overlay
- * (toggled with F9) and drives their per-frame call sites.
+ * (toggled with F7) and drives their per-frame call sites.
  *
- * Hotkeys: F9 toggles the overlay, F10 drops a map ping at the local player.
+ * Hotkeys: F7 toggles the overlay, F12 drops a map ping at the local player.
  */
 
 #include "dusk/online_ui.h"
@@ -183,7 +183,7 @@ void ping_local_player() {
 void draw_menu() {
     if (!is_active()) return;
     if (ImGui::BeginMenu("Online")) {
-        ImGui::MenuItem("Overlay (F9)", nullptr, &s_showOverlay);
+        ImGui::MenuItem("Overlay (F7)", nullptr, &s_showOverlay);
         ImGui::MenuItem("Nameplates", nullptr, &s_showNameplates);
 
         bool v = voice::enabled();
@@ -191,7 +191,7 @@ void draw_menu() {
             voice::set_enabled(v && is_connected());
         }
 
-        if (ImGui::MenuItem("Ping my location (F10)", nullptr, false, is_connected())) {
+        if (ImGui::MenuItem("Ping my location (F12)", nullptr, false, is_connected())) {
             ping_local_player();
         }
 
@@ -208,9 +208,10 @@ void draw_menu() {
 void draw() {
     if (!is_active()) return;
 
-    // Hotkeys: F9 toggles the overlay, F10 drops a map ping.
-    if (ImGui::IsKeyPressed(ImGuiKey_F9, false)) s_showOverlay = !s_showOverlay;
-    if (ImGui::IsKeyPressed(ImGuiKey_F10, false) && is_connected()) ping_local_player();
+    // Hotkeys: F7 toggles the overlay, F12 drops a map ping. (F9/F10 are taken
+    // by the engine's camera/audio debug overlays.)
+    if (ImGui::IsKeyPressed(ImGuiKey_F7, false)) s_showOverlay = !s_showOverlay;
+    if (ImGui::IsKeyPressed(ImGuiKey_F12, false) && is_connected()) ping_local_player();
 
     // Decay markers, then draw world-anchored overlays (nameplates + pings).
     ping::update(ImGui::GetIO().DeltaTime);
@@ -236,7 +237,7 @@ void draw() {
     ImGui::SetNextWindowSize(ImVec2(320.0f, 300.0f), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.60f);
     ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Online (F9)", &s_showOverlay,
+    if (ImGui::Begin("Online (F7)", &s_showOverlay,
                      ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
         ImGui::Text("Mode: %s  |  %s", mode() == Mode::Host ? "Host" : "Client",
                     is_connected() ? "connected" : status());
