@@ -236,6 +236,13 @@ int unread_count() {
     return g_unread;
 }
 
+void system_line(const char* text) {
+    if (text == nullptr || text[0] == '\0') return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    // Neutral gray "*" sender so it reads distinctly from player chat.
+    push_entry("*", 170u, 170u, 170u, text);
+}
+
 }  // namespace chat
 
 // ---- module registration ----------------------------------------------------

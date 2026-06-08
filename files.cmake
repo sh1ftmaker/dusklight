@@ -1546,6 +1546,7 @@ set(DUSK_ONLINE_FILES
         include/dusk/online_enemy.h
         include/dusk/online_puppet.h
         include/dusk/online_voice.h
+        include/dusk/online_ping.h
         include/dusk/online_ui.h
         src/dusk/online.cpp
         src/dusk/online/chat.cpp
@@ -1555,6 +1556,7 @@ set(DUSK_ONLINE_FILES
         src/dusk/online/enemy.cpp
         src/dusk/online/puppet.cpp
         src/dusk/online/voice.cpp
+        src/dusk/online/ping.cpp
         src/dusk/online/ui.cpp
 )
 

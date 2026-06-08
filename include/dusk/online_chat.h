@@ -27,6 +27,11 @@ void draw_imgui();
 // chat window was visible (useful for a notification badge in a HUD or menu).
 int unread_count();
 
+// Append a local-only system notice (e.g. "Hero joined", "Hero left") to the
+// chat log in a neutral colour. Not transmitted — each peer logs its own.
+// Safe to call from any thread.
+void system_line(const char* text);
+
 }  // namespace dusk::online::chat
 
 #endif  // DUSK_ONLINE_CHAT_H

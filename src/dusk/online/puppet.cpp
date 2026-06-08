@@ -144,6 +144,11 @@ void update_and_draw(void* ctx, ModelCreateFn create,
         const PlayerState* rp = remote_player(i);
         if (rp == NULL) continue;
 
+        // Only render peers who share our stage+room. A peer in another room
+        // would otherwise appear as a puppet standing at their world coords in
+        // our scene. Models are kept (not freed) so re-entering the room is cheap.
+        if (!in_local_room(rp)) continue;
+
         J3DModel*& model = s_puppetModels[i];
         if (model == NULL) {
             // Create through the actor's initModelEnv (mdlFlags=0) so the puppet

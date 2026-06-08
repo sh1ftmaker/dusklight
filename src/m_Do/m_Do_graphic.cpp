@@ -862,6 +862,11 @@ static void dusk_online_publishLocalTransform() {
         float pos[3] = {p.x, p.y, p.z};
         dusk::online::set_local_transform(pos, player->shape_angle.y, /*isWolf=*/false);
     }
+
+    // Publish current stage+room so peers can gate puppet/nameplate rendering to
+    // players who share our room. getStartStageName() tracks the loaded stage.
+    const char* stage = dComIfGp_getStartStageName();
+    dusk::online::set_local_room(stage, (int8_t)dComIfGp_roomControl_getStayNo());
 }
 #endif
 

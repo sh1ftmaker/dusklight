@@ -253,17 +253,31 @@ void poll_apply() {
     const int16_t stageRoomNo = read_at<int16_t>(buf.data(), kOffStageRoom);
 
     if (stageNameBuf[0] != '\0') {
-        DuskLog.info("[snapshot] pending stage load to '{}' point={} room={}",
-                     stageNameBuf, stagePoint, (int)stageRoomNo);
-
-        // TODO: request stage load to <stageNameBuf>
-        //   Use: dComIfGp_setNextStage(stageNameBuf, stagePoint, (s8)stageRoomNo, /*layer=*/0)
-        //   Declared in include/d/d_com_inf_game.h:1214 as:
-        //     void dComIfGp_setNextStage(char const* i_stage, s16 i_point,
-        //                               s8 i_roomNo, s8 i_layer);
-        //   Not called here because triggering a stage transition without
-        //   knowing the engine's current state machine state (loading, demo,
-        //   etc.) can crash.  The parent must gate this call appropriately.
+        // Only warp when we're actually in gameplay. dComIfGp_getPlayer(0) is
+        // non-null only once Link's actor exists (not during load screens, the
+        // title, or file-select), which is the same window the in-game Warp menu
+        // is usable in — so dComIfGp_setNextStage is safe to call here. If the
+        // client is still at the title/file-select, the save data is applied but
+        // we skip the warp; they'll arrive in the host's world the normal way.
+        if (dComIfGp_getPlayer(0) == nullptr) {
+            DuskLog.info("[snapshot] not in gameplay yet — applied save, skipping warp to '{}'",
+                         stageNameBuf);
+        } else {
+            // Skip a redundant reload if we're already at the destination.
+            const char* curStage = dComIfGp_getStartStageName();
+            const int   curRoom  = dComIfGp_roomControl_getStayNo();
+            const bool sameStage = curStage && std::strncmp(curStage, stageNameBuf, 8) == 0;
+            if (sameStage && curRoom == (int)stageRoomNo) {
+                DuskLog.info("[snapshot] already at '{}' room {} — no warp needed",
+                             stageNameBuf, (int)stageRoomNo);
+            } else {
+                DuskLog.info("[snapshot] warping to host: stage='{}' point={} room={}",
+                             stageNameBuf, stagePoint, (int)stageRoomNo);
+                // Same call the in-game Warp menu uses (dusk/ui/warp.cpp): the
+                // framework picks up the queued next-stage and performs the load.
+                dComIfGp_setNextStage(stageNameBuf, stagePoint, (s8)stageRoomNo, /*layer=*/0);
+            }
+        }
     } else {
         DuskLog.info("[snapshot] snapshot has no stage name — skipping stage transition");
     }

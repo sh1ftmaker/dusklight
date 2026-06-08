@@ -7,9 +7,11 @@
  */
 
 #include "dusk/online.h"
+#include "dusk/online_chat.h"
 #include "dusk/logging.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -62,6 +64,9 @@ PlayerPose g_poses[kMaxPlayers];
 std::thread g_thread;
 std::atomic<bool> g_running{false};
 std::atomic<bool> g_connected{false};
+// Set when the peer sends kOpLeave so teardown can say "left" vs "disconnected".
+// Reset at the start of each session.
+std::atomic<bool> g_peerLeaving{false};
 std::atomic<uint64_t> g_localTick{0};
 
 std::mutex g_sendMutex;
@@ -82,6 +87,8 @@ struct PlayerStateMsg {
     uint8_t isWolf;
     uint16_t animId;
     float animFrame;
+    char stage[8];
+    int8_t room;
     uint8_t input[kInputBytes];
 };
 struct HelloMsg {
@@ -96,6 +103,14 @@ void set_status(std::string s) {
     std::lock_guard<std::mutex> lk(g_statusMutex);
     g_statusText = std::move(s);
 }
+
+// Monotonic milliseconds for RTT measurement. Only ever compared against itself
+// within this process, so no cross-machine clock sync is needed.
+uint64_t now_ms() {
+    using namespace std::chrono;
+    return (uint64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+uint64_t g_lastPingSendMs = 0;
 
 const char* kNamePool[] = {
     "Hero",   "Ordon",  "Faron",  "Eldin",  "Lanayru", "Hyrule", "Twili", "Ilia",
@@ -177,16 +192,23 @@ void handle_hello(const uint8_t* data, uint32_t len) {
         g_running.store(false);
         return;
     }
-    std::lock_guard<std::mutex> lk(g_playersMutex);
-    PlayerState& p = g_players[g_remoteId];
-    p.active = true;
-    p.id = (uint8_t)g_remoteId;
-    std::memcpy(p.name, h.name, sizeof(p.name));
-    p.name[sizeof(p.name) - 1] = 0;
-    p.colorR = h.color[0];
-    p.colorG = h.color[1];
-    p.colorB = h.color[2];
-    DuskLog.info("[online] peer '{}' joined as id {}", p.name, g_remoteId);
+    char joinedName[24];
+    {
+        std::lock_guard<std::mutex> lk(g_playersMutex);
+        PlayerState& p = g_players[g_remoteId];
+        p.active = true;
+        p.id = (uint8_t)g_remoteId;
+        std::memcpy(p.name, h.name, sizeof(p.name));
+        p.name[sizeof(p.name) - 1] = 0;
+        p.colorR = h.color[0];
+        p.colorG = h.color[1];
+        p.colorB = h.color[2];
+        p.room = -1;  // unknown until their first PLAYER_STATE arrives
+        std::memcpy(joinedName, p.name, sizeof(joinedName));
+    }
+    DuskLog.info("[online] peer '{}' joined as id {}", joinedName, g_remoteId);
+    std::string notice = std::string(joinedName) + " joined";
+    chat::system_line(notice.c_str());
 }
 
 void handle_player_state(const uint8_t* data, uint32_t len) {
@@ -204,6 +226,8 @@ void handle_player_state(const uint8_t* data, uint32_t len) {
     p.isWolf = m.isWolf != 0;
     p.animId = m.animId;
     p.animFrame = m.animFrame;
+    std::memcpy(p.stage, m.stage, sizeof(p.stage));
+    p.room = m.room;
     std::memcpy(p.input, m.input, kInputBytes);
     p.lastTick = m.tick;
 }
@@ -224,6 +248,15 @@ void handle_pose(const uint8_t* data, uint32_t len) {
     p.valid = true;
 }
 
+void handle_pong(const uint8_t* data, uint32_t len) {
+    if (len < sizeof(uint64_t)) return;
+    uint64_t sentMs;
+    std::memcpy(&sentMs, data, sizeof(sentMs));
+    uint64_t rtt = now_ms() - sentMs;
+    std::lock_guard<std::mutex> lk(g_playersMutex);
+    g_players[g_remoteId].pingMs = (uint32_t)rtt;
+}
+
 void dispatch(uint8_t opcode, const uint8_t* data, uint32_t len) {
     switch (opcode) {
     case kOpHello:
@@ -237,6 +270,14 @@ void dispatch(uint8_t opcode, const uint8_t* data, uint32_t len) {
         break;
     case kOpPing:
         send_framed(kOpPong, data, len);
+        break;
+    case kOpPong:
+        handle_pong(data, len);
+        break;
+    case kOpLeave:
+        // Peer is disconnecting cleanly; its socket close follows. Record intent
+        // so teardown reports "left" rather than "disconnected".
+        g_peerLeaving.store(true);
         break;
     default:
         break;
@@ -296,18 +337,10 @@ socket_t connect_client() {
     return kInvalidSocket;
 }
 
-void io_thread_main() {
-    WSADATA wsa{};
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        set_status("WSAStartup failed");
-        return;
-    }
-    socket_t peer = (g_mode == Mode::Host) ? accept_host() : connect_client();
-    if (peer == kInvalidSocket) {
-        set_status("no connection");
-        WSACleanup();
-        return;
-    }
+// Runs one connected session start-to-finish: handshake, recv loop, and teardown.
+// Returns when the peer disconnects (cleanly or otherwise) or g_running clears.
+void run_session(socket_t peer) {
+    g_peerLeaving.store(false);
     BOOL nodelay = TRUE;
     setsockopt(peer, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
     {
@@ -333,11 +366,18 @@ void io_thread_main() {
     }
 
     g_connected.store(false);
-    set_status("disconnected");
-    DuskLog.info("[online] peer disconnected");
+
+    // Capture the departing peer's name (if it ever identified) for the notice,
+    // then clear its slot so the puppet/nameplate despawn immediately.
+    char leftName[24] = {0};
+    bool wasActive = false;
     {
         std::lock_guard<std::mutex> lk(g_playersMutex);
-        g_players[g_remoteId].active = false;
+        PlayerState& p = g_players[g_remoteId];
+        wasActive = p.active && p.name[0] != '\0';
+        if (wasActive) std::memcpy(leftName, p.name, sizeof(leftName));
+        p.active = false;
+        p.room = -1;
     }
     {
         std::lock_guard<std::mutex> lk(g_poseMutex);
@@ -348,6 +388,34 @@ void io_thread_main() {
         g_peer = kInvalidSocket;
     }
     close_socket(peer);
+
+    const bool clean = g_peerLeaving.load();
+    set_status(g_running.load() ? "waiting for peer" : "disconnected");
+    DuskLog.info("[online] peer {} ({})",
+                 clean ? "left" : "disconnected",
+                 wasActive ? leftName : "unidentified");
+    if (wasActive) {
+        std::string notice = std::string(leftName) + (clean ? " left" : " disconnected");
+        chat::system_line(notice.c_str());
+    }
+}
+
+void io_thread_main() {
+    WSADATA wsa{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        set_status("WSAStartup failed");
+        return;
+    }
+    // Reconnect loop: after a session ends, the host goes back to listening and
+    // the client retries connecting, so a dropped peer can rejoin without either
+    // side restarting. Both accept_host()/connect_client() return only on a
+    // successful connection or when g_running clears (shutdown).
+    while (g_running.load()) {
+        socket_t peer = (g_mode == Mode::Host) ? accept_host() : connect_client();
+        if (peer == kInvalidSocket) break;  // g_running went false during the wait
+        run_session(peer);
+    }
+    set_status("disconnected");
     WSACleanup();
 }
 
@@ -404,6 +472,7 @@ void init() {
     modules::init_savesync();
     modules::init_enemy();
     modules::init_voice();
+    modules::init_ping();
 
 #if DUSK_ONLINE_SOCKETS
     g_running.store(true);
@@ -416,6 +485,11 @@ void init() {
 }
 
 void shutdown() {
+#if DUSK_ONLINE_SOCKETS
+    // Announce a clean leave to the peer before tearing down, so it reports
+    // "left" (and can wait for a rejoin) rather than treating us as a drop.
+    if (g_connected.load()) send_framed(kOpLeave, nullptr, 0);
+#endif
     g_running.store(false);
 #if DUSK_ONLINE_SOCKETS
     {
@@ -473,9 +547,29 @@ void set_local_input(const void* pad64) {
         m.isWolf = me.isWolf ? 1 : 0;
         m.animId = me.animId;
         m.animFrame = me.animFrame;
+        std::memcpy(m.stage, me.stage, sizeof(m.stage));
+        m.room = me.room;
         std::memcpy(m.input, pad64, kInputBytes);
     }
     send_framed(kOpPlayerState, &m, sizeof(m));
+
+    // Once per second, ping the peer to measure RTT (echoed back via kOpPong).
+    if (g_connected.load()) {
+        uint64_t t = now_ms();
+        if (t - g_lastPingSendMs >= 1000) {
+            g_lastPingSendMs = t;
+            send_framed(kOpPing, &t, sizeof(t));
+        }
+    }
+}
+
+void set_local_room(const char* stage, int8_t room) {
+    if (g_mode == Mode::Off) return;
+    std::lock_guard<std::mutex> lk(g_playersMutex);
+    PlayerState& me = g_players[g_localId];
+    std::memset(me.stage, 0, sizeof(me.stage));
+    if (stage) std::strncpy(me.stage, stage, sizeof(me.stage) - 1);
+    me.room = room;
 }
 
 void set_local_pose(const float* baseTR, const float* jointMtx, int jointCount) {
@@ -548,6 +642,16 @@ bool get_remote_input(int id, void* pad64) {
     if (!g_players[id].active) return false;
     std::memcpy(pad64, g_players[id].input, kInputBytes);
     return true;
+}
+
+bool in_local_room(const PlayerState* p) {
+    if (p == nullptr) return false;
+    std::lock_guard<std::mutex> lk(g_playersMutex);
+    const PlayerState& me = g_players[g_localId];
+    // Unknown room (-1) means we don't yet know where one of us is — don't show.
+    if (p->room < 0 || me.room < 0) return false;
+    if (p->room != me.room) return false;
+    return std::memcmp(p->stage, me.stage, sizeof(me.stage)) == 0;
 }
 
 const char* local_name() { return g_localName.c_str(); }

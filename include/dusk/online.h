@@ -21,7 +21,7 @@ enum class Mode { Off, Host, Client };
 
 // Wire protocol version; bumped when the framing/opcodes change. Peers with a
 // mismatching version are rejected at handshake.
-constexpr uint32_t kProtocolVersion = 2;
+constexpr uint32_t kProtocolVersion = 3;
 
 constexpr int kMaxPlayers = 16;
 constexpr int kInputBytes = 64;  // sizeof(interface_of_controller_pad)
@@ -49,6 +49,12 @@ struct PlayerState {
     int16_t angleY = 0;
     bool isWolf = false;
 
+    // Where the player currently is in the world. Used to gate puppet/nameplate
+    // rendering so peers only appear when they share your stage+room. stage is an
+    // 8-char null-padded stage name; room is the current room number (-1 = unknown).
+    char stage[8] = {0};
+    int8_t room = -1;
+
     uint16_t animId = 0;   // game-defined animation id (0 = unset)
     float animFrame = 0.f;
 
@@ -69,6 +75,8 @@ const char* status();
 void set_local_transform(const float pos[3], int16_t angleY, bool isWolf);
 void set_local_anim(uint16_t animId, float frame);
 void set_local_input(const void* pad64);
+// Current stage (8-char null-padded name) + room number of the local player.
+void set_local_room(const char* stage, int8_t room);
 
 // ---- player table (network -> engine) ----
 // --- skeletal pose streaming (puppet animation) ---
@@ -85,6 +93,11 @@ int remote_count();                 // active remote players
 const PlayerState* remote_player(int idx);  // 0..remote_count()-1, or nullptr
 const PlayerState* player_by_id(int id);
 bool get_remote_input(int id, void* pad64);
+
+// True if the given player shares the local player's stage+room (so their puppet
+// and nameplate should be visible). Returns false for a null player. A player
+// with an unknown room (-1) is treated as not co-located.
+bool in_local_room(const PlayerState* p);
 
 // ---- identity ----
 const char* local_name();
@@ -110,6 +123,7 @@ void init_snapshot();
 void init_savesync();
 void init_enemy();
 void init_voice();
+void init_ping();
 }  // namespace modules
 
 }  // namespace dusk::online
