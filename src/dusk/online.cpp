@@ -56,6 +56,13 @@ std::thread g_dirThread;                     // host registration loop
 std::mutex g_roomListMutex;
 std::vector<directory::RoomInfo> g_lastRoomList;  // last list a client fetched (for the UI)
 
+// Click-to-join: the UI sets an explicit host/port to connect to next; the client
+// IO thread honors it before its automatic selection.
+std::mutex g_pendingMutex;
+bool g_havePendingJoin = false;
+std::string g_pendingHost;
+uint16_t g_pendingPort = 0;
+
 int g_localId = 0;
 int g_remoteId = 1;
 
@@ -332,9 +339,13 @@ socket_t accept_host() {
     return peer;
 }
 
-socket_t connect_client() {
+// maxAttempts == 0 means retry until connected or shutdown. A positive value caps
+// the attempts and returns kInvalidSocket on giving up — used for directory picks
+// so an unreachable host returns control to the room browser instead of hanging.
+socket_t connect_client(int maxAttempts = 0) {
     set_status("connecting to " + g_hostAddr + ":" + std::to_string(g_port));
     DuskLog.info("[online] connecting to {}:{}...", g_hostAddr, g_port);
+    int attempts = 0;
     while (g_running.load()) {
         socket_t s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (s != kInvalidSocket) {
@@ -345,6 +356,7 @@ socket_t connect_client() {
             if (connect(s, (sockaddr*)&addr, sizeof(addr)) == 0) return s;
             close_socket(s);
         }
+        if (maxAttempts > 0 && ++attempts >= maxAttempts) return kInvalidSocket;
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     return kInvalidSocket;
@@ -424,11 +436,28 @@ bool icontains(const char* haystack, const std::string& needle) {
     return h.find(n) != std::string::npos;
 }
 
-// Client: query the directory and pick a room into g_hostAddr/g_port. Selection
-// (DUSK_ONLINE_ROOM): a numeric index, or a name substring; empty = first room.
+// Client: decide which host to connect to next, into g_hostAddr/g_port.
+//   1. An explicit UI pick (join_room / click-to-join) always wins.
+//   2. Otherwise the directory is queried (refreshing the browser list). If a
+//      selection was configured (DUSK_ONLINE_ROOM = index or name substring) the
+//      matching room is auto-joined; with no selection the client WAITS and shows
+//      the list so the user can pick in the F7 overlay.
 // Rooms whose gameplay protocol differs from ours are skipped. Returns false (and
-// sets a status) when the directory is unreachable or no matching room exists yet.
+// sets a status) when there is nothing to connect to yet.
 bool resolve_room_from_directory() {
+    // 1. Honor an explicit click-to-join pick.
+    {
+        std::lock_guard<std::mutex> lk(g_pendingMutex);
+        if (g_havePendingJoin) {
+            g_havePendingJoin = false;
+            g_hostAddr = g_pendingHost;
+            g_port = g_pendingPort;
+            set_status("joining " + g_hostAddr + ":" + std::to_string(g_port));
+            return true;
+        }
+    }
+
+    // 2. Refresh the list (always, so the browser stays current while waiting).
     std::vector<directory::RoomInfo> rooms;
     if (!directory::fetch_rooms(g_dirAddr.c_str(), g_dirPort, rooms)) {
         set_status("directory unreachable (" + g_dirAddr + ")");
@@ -438,7 +467,14 @@ bool resolve_room_from_directory() {
         std::lock_guard<std::mutex> lk(g_roomListMutex);
         g_lastRoomList = rooms;
     }
-    // Drop protocol-mismatched rooms before selecting.
+
+    // 3. Auto-join only when a selection was configured; otherwise wait for a pick.
+    if (g_roomSel.empty()) {
+        set_status(rooms.empty() ? "no rooms — waiting (F7 to browse)"
+                                 : "pick a room (F7)");
+        return false;
+    }
+
     std::vector<directory::RoomInfo> usable;
     for (const auto& r : rooms)
         if (r.protocolVersion == kProtocolVersion) usable.push_back(r);
@@ -448,18 +484,13 @@ bool resolve_room_from_directory() {
     }
 
     const directory::RoomInfo* chosen = nullptr;
-    if (g_roomSel.empty()) {
-        chosen = &usable[0];
+    char* end = nullptr;
+    long idx = std::strtol(g_roomSel.c_str(), &end, 10);
+    if (end && *end == '\0' && idx >= 0 && idx < (long)usable.size()) {
+        chosen = &usable[(size_t)idx];
     } else {
-        // Numeric? treat as an index into the usable list.
-        char* end = nullptr;
-        long idx = std::strtol(g_roomSel.c_str(), &end, 10);
-        if (end && *end == '\0' && idx >= 0 && idx < (long)usable.size()) {
-            chosen = &usable[(size_t)idx];
-        } else {
-            for (const auto& r : usable)
-                if (icontains(r.name, g_roomSel)) { chosen = &r; break; }
-        }
+        for (const auto& r : usable)
+            if (icontains(r.name, g_roomSel)) { chosen = &r; break; }
     }
     if (!chosen) {
         set_status("room '" + g_roomSel + "' not found");
@@ -492,16 +523,25 @@ void io_thread_main() {
     // side restarting. Both accept_host()/connect_client() return only on a
     // successful connection or when g_running clears (shutdown).
     while (g_running.load()) {
-        // Client with a directory: resolve a live host from it before each connect
-        // attempt. Retry until a room appears (or shutdown).
+        socket_t peer;
         if (g_mode == Mode::Client && !g_dirAddr.empty()) {
+            // Directory client: resolve a host (UI pick or auto-selection) before
+            // each connect. If none is ready, wait and re-check (keeps the browser
+            // list fresh). A chosen host gets a bounded connect so an unreachable
+            // pick returns to the browser instead of hanging forever.
             if (!resolve_room_from_directory()) {
                 for (int i = 0; i < 20 && g_running.load(); ++i)
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
+            peer = connect_client(/*maxAttempts*/ 40);  // ~10s, then re-browse
+            if (peer == kInvalidSocket && g_running.load()) {
+                set_status("host unreachable — pick another (F7)");
+                continue;
+            }
+        } else {
+            peer = (g_mode == Mode::Host) ? accept_host() : connect_client();
         }
-        socket_t peer = (g_mode == Mode::Host) ? accept_host() : connect_client();
         if (peer == kInvalidSocket) break;  // g_running went false during the wait
         run_session(peer);
     }
@@ -633,6 +673,15 @@ int directory_rooms(directory::RoomInfo* out, int max) {
     if (n > max) n = max;
     for (int i = 0; i < n; ++i) out[i] = g_lastRoomList[i];
     return n;
+}
+
+void join_room(const directory::RoomInfo& room) {
+    std::lock_guard<std::mutex> lk(g_pendingMutex);
+    g_pendingHost = room.host;
+    g_pendingPort = room.gamePort;
+    g_havePendingJoin = true;
+    DuskLog.info("[online] UI requested join: {} @ {}:{}",
+                 room.name, room.host, room.gamePort);
 }
 
 Mode mode() { return g_mode; }

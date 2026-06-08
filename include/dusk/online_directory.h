@@ -27,7 +27,7 @@
 //   kMsgRoomList : [count u16][count × RoomInfo].
 namespace dusk::online::directory {
 
-constexpr uint16_t kDefaultPort = 7778;       // distinct from the gameplay default (7777)
+constexpr uint16_t kDefaultPort = 41234;      // high range to avoid vendor services that squat 777x
 constexpr uint32_t kMagic = 0x444C4259u;      // 'DLBY' — frame sentinel
 constexpr uint16_t kVersion = 1;              // directory protocol version
 constexpr uint16_t kMaxRooms = 256;           // cap on a single list response

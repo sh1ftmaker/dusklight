@@ -303,6 +303,13 @@ void draw() {
                     std::memcpy(stage, r.stage, 8);
                     ImGui::BulletText("%s  %s:%u  (%u/%u)  %s", r.name, r.host, r.gamePort,
                                       r.curPlayers, r.maxPlayers, stage[0] ? stage : "?");
+                    // Click-to-join (only meaningful while not yet connected).
+                    if (!is_connected()) {
+                        ImGui::SameLine();
+                        ImGui::PushID(i);
+                        if (ImGui::SmallButton("Join")) join_room(r);
+                        ImGui::PopID();
+                    }
                 }
             }
             ImGui::Separator();

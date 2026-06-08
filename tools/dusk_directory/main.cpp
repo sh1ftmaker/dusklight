@@ -93,8 +93,15 @@ bool send_all(socket_t s, const char* d, int len) {
 bool read_frame(socket_t s, uint8_t& op, std::vector<char>& payload) {
     FrameHeader h{};
     if (!recv_all(s, reinterpret_cast<char*>(&h), sizeof(h))) return false;
-    if (h.magic != kMagic || h.version != kVersion) return false;
-    if (h.len > sizeof(RoomInfo) * (kMaxRooms + 2)) return false;  // sanity bound
+    if (h.magic != kMagic || h.version != kVersion) {
+        log_line("ignoring frame with bad magic/version (magic=%08X ver=%u; "
+                 "wrong port or non-Dusk client?)", h.magic, h.version);
+        return false;
+    }
+    if (h.len > sizeof(RoomInfo) * (kMaxRooms + 2)) {
+        log_line("ignoring oversized frame (len=%u)", h.len);
+        return false;  // sanity bound
+    }
     payload.resize(h.len);
     if (h.len && !recv_all(s, payload.data(), (int)h.len)) return false;
     op = h.op;

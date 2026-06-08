@@ -119,6 +119,9 @@ const char* directory_address();
 const char* room_name();
 // Copies up to `max` rooms from the last list a client fetched; returns the count.
 int directory_rooms(directory::RoomInfo* out, int max);
+// Client: request connecting to a specific discovered room (click-to-join). The
+// IO thread picks this up before its next connect attempt, overriding auto-select.
+void join_room(const directory::RoomInfo& room);
 
 // ---- misc ----
 uint64_t local_tick();

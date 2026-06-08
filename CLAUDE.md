@@ -51,7 +51,7 @@ own Link). Local two-player test: `../test-two-players.bat` (disc baked in). The
 gameplay via synthetic UDP input for autonomous testing.
 
 **Room discovery (optional directory server).** Set `DUSK_ONLINE_DIRECTORY=addr[:port]`
-(default port 7778) and a host advertises its room there while clients resolve a
+(default port 41234) and a host advertises its room there while clients resolve a
 host ip:port from the list instead of needing `DUSK_ONLINE_HOST`. Host names its
 room with `DUSK_ONLINE_ROOMNAME` (default `"<name>'s room"`); a client selects with
 `DUSK_ONLINE_ROOM` (numeric index into the list, or a name substring; default =
@@ -266,7 +266,7 @@ listings; gameplay stays peer-to-peer over the existing transport.
 - **The server** (`tools/dusk_directory/main.cpp`) is a standalone, engine-free,
   cross-platform (winsock/BSD) thread-per-connection program, built as its own
   CMake target `dusk_directory` when `DUSK_ONLINE` is on. Run: `dusk_directory [port]`
-  (default 7778). **A room's lifetime = the host's registration TCP connection** —
+  (default 41234). **A room's lifetime = the host's registration TCP connection** —
   no heartbeat timer; the room is dropped when that socket closes. The server fills
   `RoomInfo.host` from the connection's source address (clients can't spoof it).
 - **Game side** (`online/directory.cpp`, winsock-guarded like online.cpp):
