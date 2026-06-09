@@ -97,7 +97,8 @@ src/dusk/online/puppet.cpp       remote-player puppet rendering (no opcode)
 src/dusk/online/ping.cpp         map "look here" pings (op 39)
 src/dusk/online/directory.cpp    room-discovery client (separate directory protocol)
 src/dusk/online/ui.cpp           ImGui panels + per-frame module pump
-tools/dusk_directory/main.cpp    standalone room directory server
+tools/dusk_directory/main.cpp    standalone room directory server (discovery)
+tools/dusk_relay/                Cloudflare Worker + Durable Object relay (NAT/fan-out)
 src/dusk/test_input.cpp          synthetic UDP pad injector (DEV ONLY)
 ```
 
@@ -280,8 +281,21 @@ listings; gameplay stays peer-to-peer over the existing transport.
     `protocolVersion`, applies the `DUSK_ONLINE_ROOM` selection, and sets
     `g_hostAddr`/`g_port`. The last fetched list is exposed via `directory_rooms()`
     for the F7 overlay (read-only browser; click-to-join is future work).
-- **Not solved here:** NAT traversal (hosts still need a reachable ip:port) and the
-  N>2-player relay. The directory is the discovery layer those would build on.
+- **Not solved by the directory:** NAT traversal and the N>2-player relay — that's
+  the job of the **relay** layer below.
+
+## Relay — NAT traversal + fan-out (`tools/dusk_relay/`, prototype)
+
+The chosen relay path is a **Cloudflare Worker + Durable Object** room (the Steam
+Datagram Relay analogue): peers open a `wss://` to a per-room Durable Object that
+fans out messages, so only outbound WebSockets are needed (NAT-friendly) and N>2
+peers work. The relay is dumb — it forwards bytes; Dusk Online stays
+host-authoritative. A join handshake carries `protocol` + a **rules/seed hash** so
+incompatible builds (e.g. randomizer variants) can't mix. JS Worker + DO done and
+locally tested (`npx wrangler dev` + `node test/relay.test.mjs`, no account needed).
+**Remaining (the substantive half):** a C++ **WebSocket transport backend** in the
+game behind `DUSK_ONLINE_RELAY=wss://…`, keeping direct-TCP intact. Deploy uses
+`wrangler` (NOT cloudflared — different cred store). See `tools/dusk_relay/README.md`.
 
 ## Conventions & gotchas
 - Git on this machine warns LF→CRLF on the dusk files; harmless.

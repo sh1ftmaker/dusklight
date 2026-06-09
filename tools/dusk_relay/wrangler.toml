@@ -1,0 +1,17 @@
+# Cloudflare Worker config for the Dusk Online room relay.
+#
+# Local dev needs no account/login:  npx wrangler dev    (Durable Objects run locally)
+# Deploy (one-time `wrangler login` first):  npx wrangler deploy
+name = "dusk-relay"
+main = "src/index.js"
+compatibility_date = "2025-05-01"
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+# Durable Objects on the free plan require the SQLite storage backend, even when
+# (as here) the object keeps no persistent storage.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]

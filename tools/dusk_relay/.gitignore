@@ -1,0 +1,5 @@
+# Local wrangler dev state/cache and installed deps — not source.
+node_modules/
+.wrangler/
+.dev.vars
+dist/
